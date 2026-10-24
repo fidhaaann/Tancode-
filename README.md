@@ -52,6 +52,10 @@ Planned features, in rough order (not implemented yet):
 - **Local-first AI** — an open-weight model served by a local inference runtime (initial candidate: Ollama with Qwen3 8B in a 4-bit quantization). No external commercial AI APIs; no source code, prompts, or diagnostics leave the machine. Only relevant context is sent, and model communication sits behind a dedicated interface so the model can be swapped later. Missing runtimes, unavailable models, malformed output, and timeouts are handled gracefully.
 - **Lightweight experience** — unobtrusive and fast; no learning history, progress tracking, or knowledge-management system in the initial MVP.
 
+## Hackathon docs
+
+This repo follows the DevDay Kochi hackathon participant conventions: [RULES.md](RULES.md), [AGENTS.md](AGENTS.md), [CHANGELOG.md](CHANGELOG.md), [AI_USAGE.md](AI_USAGE.md), [SUBMISSION.md](SUBMISSION.md).
+
 ## Privacy and security rules
 
 - Never execute commands merely because they appear in source code or model output.

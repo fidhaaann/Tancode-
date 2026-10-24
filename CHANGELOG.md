@@ -1,0 +1,33 @@
+# Change log
+
+Record each meaningful project change during the event, newest first. Update this file in the same commit as the change. Use a real timestamp with timezone, for example `YYYY-MM-DDTHH:MM:SS+05:30`.
+
+## Event build log
+
+## 2026-10-24T21:30:00+05:30 — Applied hackathon template docs
+
+- Changed: Added `RULES.md`, `AGENTS.md`, `SUBMISSION.md`, `.github/pull_request_template.md`, this change log, and `AI_USAGE.md` from the DevDay Kochi hackathon template; merged its secret-file ignore rules into `.gitignore`.
+- Why: Align Tancode with the participant repository conventions (documented changes, AI usage record, submission details).
+- Validation: Markdown-only change; links and file list checked.
+- Limitations: Participant names and final submission SHA in `SUBMISSION.md` remain TODO.
+
+## 2026-10-24T20:45:00+05:30 — Milestone 1: rule-based file explanation panel
+
+- Changed: `src/analysis.ts` (deterministic explanations for 15 languages), `src/explanationPanel.ts` (CSP-locked `Tancode` webview that follows the active editor), `tancode.explainCurrentFile` command, README usage.
+- Why: First usable feature — explain the active file locally without any AI model.
+- Validation: `npm ci`, `npm run compile`, `npm run typecheck` pass; analyzer smoke-tested on sample TypeScript/Python inputs.
+- Limitations: Interactive webview test requires desktop VS Code — pending manual F5 check.
+
+## 2026-10-24T20:10:00+05:30 — Build reliability hardening
+
+- Changed: `engines.node >=20`, `.npmrc` `engine-strict=true`, `scripts/preflight.js` wired as pre-scripts, troubleshooting docs.
+- Why: `npm run compile` failed with `'tsc' is not recognized` when `node_modules` was missing — needed a clear failure path instead of a raw `tsc` error.
+- Validation: clean `npm ci` → compile/typecheck pass; preflight prints the `npm ci` hint when dependencies are missing.
+- Limitations: F5 launch still requires manual verification in desktop VS Code.
+
+## 2026-10-24T19:55:00+05:30 — Initial VS Code extension scaffold
+
+- Changed: Created `package.json`, `src/extension.ts`, `tsconfig.json`, `.vscode/` launch+tasks, `.gitignore`/`.vscodeignore`, `.env`/`.env.example`, README.
+- Why: Project foundation per the initial milestone spec.
+- Validation: `npm install`, `tsc` compile and `--noEmit` typecheck pass; `git check-ignore` confirmed `.env` untracked and `.env.example` tracked.
+- Limitations: Extension Development Host launch not exercised in the build environment.
