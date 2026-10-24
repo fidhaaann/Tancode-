@@ -4,10 +4,14 @@ import { OllamaClient, OllamaError, OllamaErrorKind } from './ollama';
 import type { GenerateOptions } from './ollama';
 import {
 	buildAssessmentPrompt,
+	buildChatPrompt,
+	buildDiagnosticPrompt,
+	buildInsightPrompt,
 	buildPrompt,
 	buildQuestionPrompt,
 	buildSelectionPrompt,
 	CodeSelection,
+	DiagnosticContext,
 	ExplainMode,
 	parseResponse,
 	SelectionMode,
@@ -64,6 +68,9 @@ const NUM_PREDICT: Record<string, number> = {
 	'sel-learn': 500,
 	question: 180,
 	assess: 500,
+	chat: 300,
+	insight: 150,
+	diagnostic: 400,
 };
 
 // Optional streaming/cancellation channel from the panel. `signal` aborts
@@ -190,6 +197,59 @@ export class ExplanationService {
 			sel,
 		);
 		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=question lines=${sel.startLine}-${sel.endLine} bytes=${sel.text.length}`, undefined, selDoc, NUM_PREDICT.question, ui);
+	}
+
+	// Explains a real editor diagnostic — dedupe/cache via the caller's key
+	// (diag line+code hash); same doc mutation happens at the same location.
+	async explainDiagnostic(
+		doc: DocLike,
+		sel: CodeSelection,
+		diag: DiagnosticContext,
+		cacheKey: string,
+		ui?: RequestUi,
+	): Promise<ExplanationResult> {
+		const selDoc: DocLike = { ...doc, getText: () => sel.text };
+		const tag = `file=${baseName(doc.fileName)} mode=diagnostic line=${diag.line}`;
+		const hit = this.cache.get(cacheKey);
+		if (hit) {
+			this.logger?.info(`explain cache hit: ${tag}`);
+			return hit.status === 'ok' && hit.source === 'model' ? { ...hit, fromCache: true } : hit;
+		}
+		const parts = buildDiagnosticPrompt(
+			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
+			sel, diag,
+		);
+		return this.runInference(parts, tag, cacheKey, selDoc, NUM_PREDICT.diagnostic, ui);
+	}
+
+	// Proactive scan of a saved file: returns the model's insight text or the
+	// literal 'NONE' — the panel treats NONE as "stay quiet". Cached per
+	// content so identical saves don't re-run inference.
+	async findInsight(doc: DocLike, contentHash: string, ui?: RequestUi): Promise<ExplanationResult> {
+		const tag = `file=${baseName(doc.fileName)} mode=insight bytes=${doc.getText().length}`;
+		const key = ExplanationCache.key(doc.uri.toString(), 0, this.options.model, `insight:${contentHash}`);
+		const hit = this.cache.get(key);
+		if (hit) {
+			this.logger?.info(`explain cache hit: ${tag}`);
+			return hit.status === 'ok' && hit.source === 'model' ? { ...hit, fromCache: true } : hit;
+		}
+		const parts = buildInsightPrompt({ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() });
+		return this.runInference(parts, tag, key, doc, NUM_PREDICT.insight, ui);
+	}
+
+	// Conversational answers are never cached — they depend on live history.
+	async chatAnswer(
+		doc: DocLike,
+		sel: CodeSelection | undefined,
+		question: string,
+		history: Array<{ role: 'user' | 'assistant'; text: string }>,
+		ui?: RequestUi,
+	): Promise<ExplanationResult> {
+		const parts = buildChatPrompt(
+			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
+			sel, question, history,
+		);
+		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=chat bytes=${question.length}`, undefined, doc, NUM_PREDICT.chat, ui);
 	}
 
 	async assessAnswer(

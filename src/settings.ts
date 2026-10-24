@@ -1,11 +1,17 @@
 import * as vscode from 'vscode';
 
+export type ProactiveLevel = 'all' | 'errors-only';
+
 export interface TancodeSettings {
 	ollamaBaseUrl: string;
 	ollamaModel: string;
 	maxSourceBytes: number;
 	requestTimeoutMs: number;
 	fallbackToRules: boolean;
+	proactiveEnabled: boolean;
+	proactiveLevel: ProactiveLevel;
+	proactiveCooldownSeconds: number;
+	proactiveMaxPerSession: number;
 }
 
 export function getSettings(): TancodeSettings {
@@ -16,5 +22,9 @@ export function getSettings(): TancodeSettings {
 		maxSourceBytes: cfg.get<number>('maxSourceBytes', 65536),
 		requestTimeoutMs: cfg.get<number>('requestTimeoutMs', 120000),
 		fallbackToRules: cfg.get<boolean>('fallbackToRuleBased', true),
+		proactiveEnabled: cfg.get<boolean>('proactive.enabled', true),
+		proactiveLevel: cfg.get<ProactiveLevel>('proactive.level', 'all'),
+		proactiveCooldownSeconds: cfg.get<number>('proactive.cooldownSeconds', 90),
+		proactiveMaxPerSession: cfg.get<number>('proactive.maxPerSession', 12),
 	};
 }

@@ -192,3 +192,88 @@ export function parseSections(text: string): ParsedSection[] | undefined {
 		.filter(s => s.body.length > 0);
 	return nonEmpty.length >= 2 ? nonEmpty : undefined;
 }
+
+export interface DiagnosticContext {
+	message: string;
+	severity: 'error' | 'warning';
+	line: number; // 1-based, display
+	code?: string;
+}
+
+// Explains a real VS Code diagnostic. The diagnostic itself is a confirmed
+// editor fact; causes/fixes must be clearly framed as inference.
+export function buildDiagnosticPrompt(doc: SourceDoc, sel: CodeSelection, diag: DiagnosticContext): { system: string; prompt: string } {
+	return {
+		system: SYSTEM_PROMPT,
+		prompt: [
+			`The editor reports a confirmed ${diag.severity} at line ${diag.line} of "${doc.fileName}" (${doc.languageId}):`,
+			`<diagnostic>`,
+			`${diag.code ? `[${diag.code}] ` : ''}${diag.message}`,
+			`</diagnostic>`,
+			'',
+			'Explain it to a learner in 3-5 short paragraphs:',
+			'what the error means in plain language, the likely cause in this code, the programming',
+			'concept behind it, how they might fix it (suggest, never apply), and how to verify the fix.',
+			'The diagnostic text above is confirmed by the editor; causes and fixes you propose are',
+			'inference — say "likely" or "probably" rather than claiming certainty.',
+			'Do not invent other errors, line numbers, or causes not grounded in the provided code.',
+			'End with one short follow-up question that helps the developer learn.',
+			'',
+			selectionBlock(doc, sel),
+		].join('\n'),
+	};
+}
+
+// Asks the model to find ONE genuinely useful teaching moment in a saved
+// file — or say NONE so the assistant stays quiet. Proactive silence is a
+// feature: routine saves produce no message.
+export function buildInsightPrompt(doc: SourceDoc): { system: string; prompt: string } {
+	return {
+		system: SYSTEM_PROMPT,
+		prompt: [
+			`Look at "${doc.fileName}" (${doc.languageId}) and decide if it contains something genuinely`,
+			'worth teaching a developer who is learning while building with AI tools: an unfamiliar',
+			'construct, a subtle edge case, a meaningful design decision, or a realistic pitfall.',
+			'',
+			'If yes: reply with ONE concise insight of 2-4 sentences, grounded in specific code from the',
+			'file — name the construct and say why it matters. Do not ask multiple questions.',
+			'If nothing stands out as worth interrupting for, reply with exactly: NONE',
+			'Never invent problems; if the code looks fine and unremarkable, say NONE.',
+			'',
+			'<file>',
+			doc.text,
+			'</file>',
+		].join('\n'),
+	};
+}
+
+// Answers a user's chat question grounded in the current selection or file,
+// with bounded recent conversation history. History and source are marked
+// untrusted; the model must not treat them as instructions.
+export function buildChatPrompt(
+	doc: SourceDoc,
+	sel: CodeSelection | undefined,
+	question: string,
+	history: Array<{ role: 'user' | 'assistant'; text: string }>,
+): { system: string; prompt: string } {
+	const parts: string[] = [
+		`Answer the user's question about "${doc.fileName}" (${doc.languageId}) directly and concisely.`,
+		'Teach briefly where it helps, but answer the actual question first — do not force a lesson.',
+		'If the provided code does not contain the answer, say so plainly instead of inventing details.',
+		'',
+	];
+	if (history.length > 0) {
+		parts.push('<history>');
+		for (const h of history) {
+			parts.push(`${h.role === 'user' ? 'User' : 'Tancode'}: ${h.text}`);
+		}
+		parts.push('</history>', '');
+	}
+	parts.push(`<user_question>\n${question}\n</user_question>`, '');
+	if (sel) {
+		parts.push(selectionBlock(doc, sel));
+	} else {
+		parts.push('<file>', doc.text, '</file>');
+	}
+	return { system: SYSTEM_PROMPT, prompt: parts.join('\n') };
+}

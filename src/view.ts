@@ -1,5 +1,6 @@
 import type { FileExplanation } from './analysis';
 import type { ParsedSection } from './model/prompt';
+import type { ChatEntry, EntryTag } from './conversation';
 
 // Every string rendered in the webview that derives from the workspace or
 // the model passes through this escape — both are untrusted input.
@@ -280,6 +281,57 @@ const CSS = `
 	details.learn { margin: 8px 0; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); border-radius: 3px; padding: 6px 10px; }
 	details.learn summary { cursor: pointer; font-weight: 600; }
 	details.learn .learn-body { margin-top: 6px; }
+	// --- Conversation feed ---
+	.toolbar {
+		display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+		padding-bottom: 10px; margin-bottom: 10px;
+		border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+	}
+	.toolbar h2 { margin: 0; flex: 0 0 auto; }
+	.toolbar .watching { flex: 1 1 auto; }
+	.feed { margin: 10px 0; }
+	.msg { margin: 8px 0; }
+	.msg.user {
+		margin-left: 18%; padding: 8px 12px; border-radius: 6px;
+		background: var(--vscode-input-background);
+		border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.5));
+		white-space: pre-wrap;
+	}
+	.msg.user p { margin: 0; }
+	.feed-card {
+		margin: 8px 0; padding: 10px 12px; border-radius: 6px;
+		border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+		background: var(--vscode-editor-inactiveSelectionBackground, rgba(128,128,128,0.08));
+	}
+	.tag {
+		display: inline-block; padding: 1px 7px; margin-bottom: 4px;
+		font-size: 0.78em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+		border-radius: 3px; color: var(--vscode-badge-foreground);
+		background: var(--vscode-badge-background);
+	}
+	.tag.insight { background: var(--vscode-charts-blue, #3794ff); }
+	.tag.error { background: var(--vscode-editorError-foreground, #f14c4c); }
+	.tag.question { background: var(--vscode-charts-purple, #b180d7); }
+	.tag.answer { background: var(--vscode-charts-green, #89d185); color: #1f1f1f; }
+	.dismiss {
+		float: right; cursor: pointer; border: none; background: none;
+		color: var(--vscode-descriptionForeground); font-size: 1em; padding: 0 2px;
+	}
+	.dismiss:hover { color: var(--vscode-foreground); }
+	.composer {
+		position: sticky; bottom: 0; margin-top: 12px; padding-top: 8px;
+		border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+		background: var(--vscode-panel-background, transparent);
+	}
+	textarea#tancode-chat {
+		width: 100%; box-sizing: border-box; padding: 6px 8px; min-height: 34px;
+		font: inherit; resize: vertical;
+		background: var(--vscode-input-background);
+		color: var(--vscode-input-foreground);
+		border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.5));
+		border-radius: 2px;
+	}
+	textarea#tancode-chat:focus { outline: 1px solid var(--vscode-focusBorder); }
 	.answer-label { display: block; margin-top: 14px; font-weight: 600; }
 	textarea#tancode-answer {
 		width: 100%; box-sizing: border-box; margin-top: 4px; padding: 6px 8px;
@@ -295,6 +347,13 @@ const CSS = `
 
 const SCRIPT = `
 	const vscode = acquireVsCodeApi();
+	const sendChat = () => {
+		const ta = document.getElementById('tancode-chat');
+		if (ta && ta.value.trim().length > 0) {
+			vscode.postMessage({ type: 'chat', text: ta.value });
+			ta.value = '';
+		}
+	};
 	document.addEventListener('click', (e) => {
 		const btn = e.target.closest('[data-action]');
 		if (!btn) return;
@@ -302,13 +361,29 @@ const SCRIPT = `
 		if (action === 'submit-answer') {
 			const ta = document.getElementById('tancode-answer');
 			vscode.postMessage({ type: action, text: ta ? ta.value : '' });
+		} else if (action === 'send-chat') {
+			sendChat();
+		} else if (action === 'dismiss') {
+			vscode.postMessage({ type: 'dismiss', id: Number(btn.dataset.id) });
 		} else {
 			vscode.postMessage({ type: action });
 		}
 	});
+	document.addEventListener('keydown', (e) => {
+		const ta = document.getElementById('tancode-chat');
+		if (ta && e.target === ta && e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			sendChat();
+		}
+	});
+	window.scrollTo(0, document.body.scrollHeight);
 `;
 
 export function renderDocument(state: ViewState, nonce: string): string {
+	return renderPage(renderBody(state), nonce);
+}
+
+function renderPage(body: string, nonce: string): string {
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -319,8 +394,78 @@ export function renderDocument(state: ViewState, nonce: string): string {
 <style>${CSS}</style>
 </head>
 <body>
-${renderBody(state)}
+${body}
 <script nonce="${nonce}">${SCRIPT}</script>
 </body>
 </html>`;
+}
+
+// --- Conversation view ---
+
+const TAG_LABEL: Record<EntryTag, string> = {
+	insight: 'Learning moment',
+	error: 'Error',
+	question: 'Question for you',
+	answer: 'Feedback',
+	info: 'Note',
+};
+
+export interface ConversationView {
+	context?: ViewState;          // pinned card: the current explanation state
+	entries: ChatEntry[];          // chronological feed below the context card
+	watching?: string;             // e.g. 'app.ts' or 'app.ts · lines 3–9'
+	model: string;
+	paused: boolean;               // proactive assistance paused
+	generating: boolean;           // a streamed response is in flight
+	proactiveCount: number;
+	proactiveMax: number;
+}
+
+function entryHtml(entry: ChatEntry): string {
+	if (entry.kind === 'text') {
+		return `<div class="msg user"><p>${escapeHtml(entry.text)}</p></div>`;
+	}
+	if (entry.kind === 'state') {
+		return `<div class="feed-card">${entry.tag ? `<span class="tag ${entry.tag}">${TAG_LABEL[entry.tag]}</span>` : ''}${renderBody(entry.state)}</div>`;
+	}
+	if (entry.dismissed) {
+		return '';
+	}
+	const dismiss = entry.dismissible
+		? `<button class="dismiss" data-action="dismiss" data-id="${entry.id}" title="Dismiss" aria-label="Dismiss">&times;</button>`
+		: '';
+	const partial = entry.partial ? ' <span class="muted">&hellip;</span>' : '';
+	const model = entry.model ? ` <span class="muted">\u00B7 ${escapeHtml(entry.model)}</span>` : '';
+	return `<div class="feed-card">${dismiss}<span class="tag ${entry.tag}">${TAG_LABEL[entry.tag]}</span>${model}<div>${modelText(entry.text)}</div>${partial}</div>`;
+}
+
+export function renderConversation(v: ConversationView): string {
+	const toggleBtn = v.paused
+		? '<button class="btn" data-action="resume">Resume proactive</button>'
+		: '<button class="btn" data-action="pause">Pause proactive</button>';
+	const stopBtn = v.generating
+		? '<button class="btn" data-action="stop">Stop</button>'
+		: '';
+	const pausedNote = v.paused ? ' \u00B7 proactive paused' : '';
+	const feed = v.entries.map(entryHtml).join('');
+	const context = v.context ? `<div class="feed-card">${renderBody(v.context)}</div>` : '';
+	return `
+	<div class="toolbar">
+		<h2>Tancode</h2>
+		<span class="watching muted">${v.watching ? `Watching ${escapeHtml(v.watching)}` : 'No file being watched'}${pausedNote}</span>
+		${stopBtn}${toggleBtn}
+	</div>
+	${context}
+	<div class="feed">${feed}</div>
+	<div class="composer">
+		<textarea id="tancode-chat" rows="2" placeholder="Ask about this code, answer a question, or say &quot;pause proactive&quot;&hellip;"></textarea>
+		<div class="actions">
+			<button class="btn primary" data-action="send-chat">Send</button>
+			<span class="muted">Generated by ${escapeHtml(v.model)} locally &middot; proactive ${v.proactiveCount}/${v.proactiveMax} &middot; answers can be wrong — verify</span>
+		</div>
+	</div>`;
+}
+
+export function renderConversationDocument(v: ConversationView, nonce: string): string {
+	return renderPage(renderConversation(v), nonce);
 }

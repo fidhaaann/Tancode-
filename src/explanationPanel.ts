@@ -7,13 +7,23 @@ import { DocLike, ExplanationResult, ExplanationService } from './model/service'
 import { dispatchWebviewMessage } from './messages';
 import { getSettings, TancodeSettings } from './settings';
 import { getLogger } from './log';
-import { renderDocument, ViewState } from './view';
+import { renderConversationDocument, ViewState } from './view';
+import { assistantMessage, ChatEntry, pushTurn, HistoryTurn, stateEntry, userMessage } from './conversation';
+import { routeMessage } from './chat';
+import { diagKey, DiagLike, hashContent, pickDiagnostic, ProactiveBudget } from './proactive';
 
 const PANEL_VIEW_TYPE = 'tancode.explanation';
 const DEBOUNCE_MS = 350;
 const CONTEXT_LINES = 8;
 const MAX_CONTEXT_CHARS = 2000;
 const MAX_ANSWER_CHARS = 4000;
+const MAX_CHAT_CHARS = 2000;
+const DIAG_DEBOUNCE_MS = 800;
+const INSIGHT_DEBOUNCE_MS = 1500;
+const MAX_FEED_ENTRIES = 100;
+// A diagnostic insight looks at the reported line plus this much context
+// on each side — enough to explain, small enough to stay fast.
+const DIAG_CONTEXT_LINES = 3;
 // Streamed chunks can arrive many times per second — re-render at most
 // this often so the webview stays responsive while text accumulates.
 const STREAM_PAINT_MS = 120;
@@ -65,8 +75,29 @@ export class ExplanationPanel {
 	private updateSeq = 0;
 	// Aborts the in-flight model request when a newer update starts —
 	// frees the GPU instead of letting a stale generation run to
-	// completion for a result nobody will see.
+	// completion for a result nobody will see. User-driven flows
+	// (context explanations, chat, quiz) share this controller;
+	// proactive flows use their own so a user action can't kill an
+	// insight mid-generation (and vice versa).
 	private currentAbort: AbortController | undefined;
+	private proactiveAbort: AbortController | undefined;
+
+	// --- Conversation state ---
+	private contextState: ViewState | undefined;
+	private entries: ChatEntry[] = [];
+	private nextId = 0;
+	private history: HistoryTurn[] = [];
+	private inflightCount = 0;
+	private budget: ProactiveBudget | undefined;
+	private pendingQuestion: { question: string; sel: CodeSelection; selDoc: DocLike } | undefined;
+	private knowledgeCheckDone = new Set<string>();
+	private quizEntryId: number | undefined;
+	private diagSeen = new Set<string>();
+	private diagBusy = false;
+	private diagTimer: NodeJS.Timeout | undefined;
+	private lastInsightHash: string | undefined;
+	private insightBusy = false;
+	private insightTimer: NodeJS.Timeout | undefined;
 
 	static createOrShow(context: vscode.ExtensionContext): void {
 		if (ExplanationPanel.current) {
@@ -140,6 +171,16 @@ export class ExplanationPanel {
 		this.scheduleUpdate(0);
 	}
 
+	private get proactiveBudget(): ProactiveBudget {
+		if (!this.budget) {
+			this.budget = new ProactiveBudget(
+				this.settings.proactiveCooldownSeconds * 1000,
+				this.settings.proactiveMaxPerSession,
+			);
+		}
+		return this.budget;
+	}
+
 	private constructor(panel: vscode.WebviewPanel) {
 		this.panel = panel;
 		this.settings = getSettings();
@@ -187,7 +228,34 @@ export class ExplanationPanel {
 					newQuestion: () => this.startQuiz(),
 					submitAnswer: text => this.submitAnswer(text),
 					backToFile: () => this.useFileTarget(),
+					chat: text => void this.onChat(text),
+					stop: () => this.stopGeneration(),
+					pause: () => this.setProactiveEnabled(false),
+					resume: () => this.setProactiveEnabled(true),
+					dismiss: id => this.dismissEntry(id),
 				});
+			}),
+			// Proactive trigger 1: editor diagnostics — debounced; only the
+			// active file's diagnostics are ever considered.
+			vscode.languages.onDidChangeDiagnostics(event => {
+				const editor = vscode.window.activeTextEditor;
+				if (!editor || !this.settings.proactiveEnabled) {
+					return;
+				}
+				if (!event.uris.some(u => u.toString() === editor.document.uri.toString())) {
+					return;
+				}
+				this.scheduleDiagCheck();
+			}),
+			// Proactive trigger 2: a meaningful change saved in the active file.
+			vscode.workspace.onDidSaveTextDocument(document => {
+				if (!this.settings.proactiveEnabled || this.settings.proactiveLevel === 'errors-only') {
+					return;
+				}
+				if (document !== vscode.window.activeTextEditor?.document || !isSupported(document)) {
+					return;
+				}
+				this.scheduleInsight();
 			})
 		);
 
@@ -292,6 +360,23 @@ export class ExplanationPanel {
 		return this.currentAbort;
 	}
 
+	private beginProactive(): AbortController {
+		this.proactiveAbort?.abort();
+		this.proactiveAbort = new AbortController();
+		return this.proactiveAbort;
+	}
+
+	// inflightCount drives the Stop button and the "generating" state.
+	private beginInflight(): void {
+		this.inflightCount++;
+		this.renderAll();
+	}
+
+	private endInflight(): void {
+		this.inflightCount = Math.max(0, this.inflightCount - 1);
+		this.renderAll();
+	}
+
 	private async update(force = false): Promise<void> {
 		if (this.target.kind === 'selection') {
 			return this.updateSelection(force);
@@ -362,7 +447,13 @@ export class ExplanationPanel {
 				text, fromCache: false, partial: true,
 			});
 		};
-		const result = await this.service.explain(document, this.fileMode, force, { signal: abort.signal, onToken });
+		let result: ExplanationResult;
+		this.beginInflight();
+		try {
+			result = await this.service.explain(document, this.fileMode, force, { signal: abort.signal, onToken });
+		} finally {
+			this.endInflight();
+		}
 		if (seq !== this.updateSeq || !this.lastKey?.startsWith(`file:${document.uri.toString()}:`)) {
 			return;
 		}
@@ -418,12 +509,24 @@ export class ExplanationPanel {
 				text, fromCache: false, partial: true,
 			});
 		};
-		const result = await this.service.explainSelection(selDoc, t.sel, this.selMode, force, { signal: abort.signal, onToken });
+		let result: ExplanationResult;
+		this.beginInflight();
+		try {
+			result = await this.service.explainSelection(selDoc, t.sel, this.selMode, force, { signal: abort.signal, onToken });
+		} finally {
+			this.endInflight();
+		}
 		if (seq !== this.updateSeq || this.lastKey !== key) {
 			return;
 		}
 
 		this.renderResult(result, { fileName: t.fileName, languageName: t.languageName, target: 'selection', mode: this.selMode, lines });
+		if (this.selMode === 'learn' && result.status === 'ok' && result.source === 'model') {
+			// After teaching a concept, offer one knowledge check — never
+			// more than once per selection, budgeted like other proactive
+			// messages so it can't spam.
+			void this.maybeKnowledgeCheck(t, selDoc);
+		}
 	}
 
 	private startQuiz(): void {
@@ -441,27 +544,47 @@ export class ExplanationPanel {
 			return;
 		}
 		const t = this.target;
+		const selDoc = this.selectionDoc(t);
 		const lines = this.linesLabel(t);
 		const seq = ++this.updateSeq;
 		const abort = this.beginRequest();
-		this.render({
+		// Quiz lives in the feed, not the pinned context card — the
+		// conversation stays visible while the question generates.
+		const entryId = ++this.nextId;
+		this.quizEntryId = entryId;
+		this.pushEntry(stateEntry(entryId, {
 			kind: 'loading', fileName: t.fileName, languageName: t.languageName, lines,
 			model: this.settings.ollamaModel, label: 'a practice question',
-		});
+		}, 'question'));
 
-		const result = await this.service.generateQuestion(this.selectionDoc(t), t.sel, { signal: abort.signal });
+		let result: ExplanationResult;
+		this.beginInflight();
+		try {
+			result = await this.service.generateQuestion(selDoc, t.sel, { signal: abort.signal });
+		} finally {
+			this.endInflight();
+		}
 		if (seq !== this.updateSeq) {
 			return;
 		}
 		if (result.status === 'ok' && result.source === 'model') {
 			this.quizQuestion = result.text;
-			this.render({
+			this.pendingQuestion = { question: result.text, sel: t.sel, selDoc };
+			this.updateEntryState(entryId, {
 				kind: 'quiz', fileName: t.fileName, languageName: t.languageName, lines,
 				model: this.settings.ollamaModel, question: result.text,
 			});
 			return;
 		}
-		this.renderResult(result, { fileName: t.fileName, languageName: t.languageName, target: 'selection', mode: 'explain', lines });
+		this.updateEntryState(entryId, this.resultToState(result, { fileName: t.fileName, languageName: t.languageName, target: 'selection', mode: 'explain', lines }));
+	}
+
+	private updateEntryState(id: number, state: ViewState): void {
+		const entry = this.entries.find(e => e.id === id && e.kind === 'state');
+		if (entry && entry.kind === 'state') {
+			entry.state = state;
+		}
+		this.renderAll();
 	}
 
 	private submitAnswer(text: string): void {
@@ -493,24 +616,70 @@ export class ExplanationPanel {
 		const lines = this.linesLabel(t);
 		const seq = ++this.updateSeq;
 		const abort = this.beginRequest();
-		this.render({
+		const entryId = this.quizEntryId ?? ++this.nextId;
+		this.quizEntryId = entryId;
+		this.pushEntry(stateEntry(entryId, {
 			kind: 'loading', fileName: t.fileName, languageName: t.languageName, lines,
 			model: this.settings.ollamaModel, label: 'feedback on your answer',
-		});
+		}, 'answer'));
 
-		const result = await this.service.assessAnswer(this.selectionDoc(t), t.sel, question, answer, { signal: abort.signal });
+		let result: ExplanationResult;
+		this.beginInflight();
+		try {
+			result = await this.service.assessAnswer(this.selectionDoc(t), t.sel, question, answer, { signal: abort.signal });
+		} finally {
+			this.endInflight();
+		}
 		if (seq !== this.updateSeq) {
 			return;
 		}
+		this.pendingQuestion = undefined;
 		if (result.status === 'ok' && result.source === 'model') {
-			this.render({
+			this.updateEntryState(entryId, {
 				kind: 'quizResult', fileName: t.fileName, languageName: t.languageName, lines,
 				model: this.settings.ollamaModel, question, answer,
 				text: result.text, sections: parseSections(result.text),
 			});
 			return;
 		}
-		this.renderResult(result, { fileName: t.fileName, languageName: t.languageName, target: 'selection', mode: 'explain', lines });
+		this.updateEntryState(entryId, this.resultToState(result, { fileName: t.fileName, languageName: t.languageName, target: 'selection', mode: 'explain', lines }));
+	}
+
+	private resultToState(
+		result: ExplanationResult,
+		ctx: {
+			fileName: string;
+			languageName: string;
+			target: 'file' | 'selection';
+			mode: 'summary' | 'detail' | 'explain' | 'learn';
+			lines?: string;
+		},
+	): ViewState {
+		switch (result.status) {
+			case 'ok':
+				return result.source === 'model'
+					? {
+						kind: 'model', fileName: ctx.fileName, languageName: ctx.languageName, lines: ctx.lines,
+						model: this.settings.ollamaModel, target: ctx.target, mode: ctx.mode,
+						text: result.text,
+						sections: ctx.mode === 'learn' ? parseSections(result.text) : undefined,
+						fromCache: result.fromCache,
+					}
+					: { kind: 'rules', fileName: ctx.fileName, languageName: ctx.languageName, explanation: result.explanation, lines: ctx.lines };
+			case 'empty':
+				return { kind: 'empty', fileName: ctx.fileName, lines: ctx.lines };
+			case 'unsupported':
+				return { kind: 'unsupported', fileName: ctx.fileName, languageId: ctx.languageName, lines: ctx.lines };
+			case 'tooLarge':
+				return { kind: 'tooLarge', fileName: ctx.fileName, bytes: result.bytes, limit: result.limit, lines: ctx.lines };
+			case 'error':
+				return {
+					kind: 'error', fileName: ctx.fileName, languageName: ctx.languageName, lines: ctx.lines,
+					model: this.settings.ollamaModel,
+					message: result.message, hint: result.hint,
+					fallback: result.fallback,
+				};
+		}
 	}
 
 	private renderResult(
@@ -523,47 +692,365 @@ export class ExplanationPanel {
 			lines?: string;
 		},
 	): void {
-		switch (result.status) {
-			case 'ok':
-				if (result.source === 'model') {
-					this.render({
-						kind: 'model', fileName: ctx.fileName, languageName: ctx.languageName, lines: ctx.lines,
-						model: this.settings.ollamaModel, target: ctx.target, mode: ctx.mode,
-						text: result.text,
-						sections: ctx.mode === 'learn' ? parseSections(result.text) : undefined,
-						fromCache: result.fromCache,
-					});
-				} else {
-					this.render({ kind: 'rules', fileName: ctx.fileName, languageName: ctx.languageName, explanation: result.explanation, lines: ctx.lines });
-				}
-				break;
-			case 'empty':
-				this.render({ kind: 'empty', fileName: ctx.fileName, lines: ctx.lines });
-				break;
-			case 'unsupported':
-				this.render({ kind: 'unsupported', fileName: ctx.fileName, languageId: ctx.languageName, lines: ctx.lines });
-				break;
-			case 'tooLarge':
-				this.render({ kind: 'tooLarge', fileName: ctx.fileName, bytes: result.bytes, limit: result.limit, lines: ctx.lines });
-				break;
-			case 'error':
-				this.render({
-					kind: 'error', fileName: ctx.fileName, languageName: ctx.languageName, lines: ctx.lines,
-					model: this.settings.ollamaModel,
-					message: result.message, hint: result.hint,
-					fallback: result.fallback,
-				});
-				break;
+		// A user-stopped or superseded request is not an error worth a red
+		// banner — note it quietly in the feed and keep the context card.
+		if (result.status === 'error' && result.kind === 'cancelled') {
+			this.pushEntry(assistantMessage(++this.nextId, 'info', 'Generation stopped.'));
+			return;
+		}
+		this.render(this.resultToState(result, ctx));
+	}
+
+	// --- Chat ---
+
+	private async onChat(text: string): Promise<void> {
+		const trimmed = text.trim().slice(0, MAX_CHAT_CHARS);
+		if (trimmed.length === 0) {
+			return;
+		}
+		this.pushEntry(userMessage(++this.nextId, trimmed));
+		pushTurn(this.history, { role: 'user', text: trimmed });
+		const intent = routeMessage(trimmed, this.pendingQuestion !== undefined);
+		switch (intent.type) {
+			case 'pause':
+				this.setProactiveEnabled(false);
+				this.pushEntry(assistantMessage(++this.nextId, 'info',
+					'Proactive assistance is paused — I\u2019ll only respond when you ask. Say "resume proactive" to turn it back on.'));
+				return;
+			case 'resume':
+				this.setProactiveEnabled(true);
+				this.pushEntry(assistantMessage(++this.nextId, 'info', 'Proactive assistance is on again.'));
+				return;
+			case 'why':
+				this.pushEntry(assistantMessage(++this.nextId, 'info',
+					'I proactively explain editor errors and occasionally flag a learning moment in code you save — never more than a few at a time. ' +
+					'You can pause me from the toolbar, say "pause proactive", or tune tancode.proactive.* in Settings.'));
+				return;
+			case 'quiz-answer':
+				return this.answerPendingQuestion(trimmed);
+			default:
+				return this.answerDirect(trimmed);
 		}
 	}
 
+	private currentDoc(): vscode.TextDocument | DocLike | undefined {
+		if (this.target.kind === 'selection') {
+			return this.selectionDoc(this.target);
+		}
+		return vscode.window.activeTextEditor?.document;
+	}
+
+	private async answerDirect(text: string): Promise<void> {
+		const doc = this.currentDoc();
+		if (!doc) {
+			this.pushEntry(assistantMessage(++this.nextId, 'info', 'Open a source file or select some code, then ask again.'));
+			return;
+		}
+		const seq = ++this.updateSeq;
+		const abort = this.beginRequest();
+		const entryId = ++this.nextId;
+		this.pushEntry(assistantMessage(entryId, 'answer', '', { partial: true, model: this.settings.ollamaModel }));
+
+		const entry = this.entries.find(e => e.id === entryId);
+		let lastPaint = 0;
+		const onToken = (accumulated: string): void => {
+			const now = Date.now();
+			if (seq !== this.updateSeq || now - lastPaint < STREAM_PAINT_MS || !entry || entry.kind !== 'message') {
+				return;
+			}
+			lastPaint = now;
+			entry.text = accumulated;
+			this.renderAll();
+		};
+
+		const sel = this.target.kind === 'selection' ? this.target.sel : undefined;
+		this.beginInflight();
+		let result: ExplanationResult;
+		try {
+			result = await this.service.chatAnswer(doc, sel, text, this.history, { signal: abort.signal, onToken });
+		} finally {
+			this.endInflight();
+		}
+		if (seq !== this.updateSeq) {
+			return;
+		}
+		this.finishChatEntry(entryId, result);
+	}
+
+	private async answerPendingQuestion(answer: string): Promise<void> {
+		const p = this.pendingQuestion;
+		this.pendingQuestion = undefined;
+		if (!p) {
+			return this.answerDirect(answer);
+		}
+		const seq = ++this.updateSeq;
+		const abort = this.beginRequest();
+		const entryId = ++this.nextId;
+		this.pushEntry(assistantMessage(entryId, 'answer', '', { partial: true, model: this.settings.ollamaModel }));
+		this.beginInflight();
+		let result: ExplanationResult;
+		try {
+			result = await this.service.assessAnswer(p.selDoc, p.sel, p.question, answer.slice(0, MAX_ANSWER_CHARS), { signal: abort.signal });
+		} finally {
+			this.endInflight();
+		}
+		if (seq !== this.updateSeq) {
+			return;
+		}
+		this.finishChatEntry(entryId, result);
+	}
+
+	// Landing spot for chat answers and assessments: stream text becomes the
+	// message, failures become an honest error note instead of a hang.
+	private finishChatEntry(entryId: number, result: ExplanationResult): void {
+		const entry = this.entries.find(e => e.id === entryId);
+		if (!entry || entry.kind !== 'message') {
+			return;
+		}
+		entry.partial = false;
+		if (result.status === 'ok' && result.source === 'model') {
+			entry.text = result.text;
+			pushTurn(this.history, { role: 'assistant', text: result.text });
+		} else if (result.status === 'ok' && result.source === 'rules') {
+			entry.text = result.explanation.summary;
+		} else if (result.status === 'error' && result.kind === 'cancelled') {
+			entry.tag = 'info';
+			entry.text = 'Generation stopped.';
+		} else if (result.status === 'error') {
+			entry.tag = 'error';
+			entry.text = `${result.message} ${result.hint}`;
+		} else {
+			entry.tag = 'info';
+			entry.text = 'I could not generate an answer for that — try again?';
+		}
+		this.renderAll();
+	}
+
+	private stopGeneration(): void {
+		this.currentAbort?.abort();
+		this.proactiveAbort?.abort();
+	}
+
+	private dismissEntry(id: number): void {
+		const entry = this.entries.find(e => e.id === id);
+		if (entry && entry.kind === 'message') {
+			entry.dismissed = true;
+			this.renderAll();
+		}
+	}
+
+	private setProactiveEnabled(on: boolean): void {
+		this.settings = { ...this.settings, proactiveEnabled: on };
+		void vscode.workspace.getConfiguration('tancode').update('proactive.enabled', on, true);
+		this.renderAll();
+	}
+
+	// --- Proactive observation ---
+
+	private scheduleDiagCheck(delay = DIAG_DEBOUNCE_MS): void {
+		if (this.diagTimer) {
+			clearTimeout(this.diagTimer);
+		}
+		this.diagTimer = setTimeout(() => {
+			this.diagTimer = undefined;
+			void this.evaluateDiagnostics();
+		}, delay);
+	}
+
+	private async evaluateDiagnostics(): Promise<void> {
+		const editor = vscode.window.activeTextEditor;
+		if (!editor || this.diagBusy || !this.settings.proactiveEnabled) {
+			return;
+		}
+		const uri = editor.document.uri.toString();
+		const diags: DiagLike[] = vscode.languages.getDiagnostics(editor.document.uri).map(d => ({
+			severity: d.severity,
+			message: d.message,
+			line: d.range.start.line + 1,
+			code: d.code === undefined ? undefined : typeof d.code === 'object' ? String(d.code.value) : String(d.code),
+		}));
+		const unseen = diags.filter(d => !this.diagSeen.has(diagKey(uri, d)));
+		const diag = pickDiagnostic(unseen, this.settings.proactiveLevel === 'errors-only');
+		if (!diag) {
+			return;
+		}
+		const hash = diagKey(uri, diag);
+		const verdict = this.proactiveBudget.check(`diag:${hash}`);
+		if (verdict === 'seen' || verdict === 'limit') {
+			this.diagSeen.add(hash);
+			return;
+		}
+		if (verdict === 'cooldown') {
+			// Hold it — try again when the cooldown expires rather than
+			// dropping the error explanation entirely.
+			this.scheduleDiagCheck(this.proactiveBudget.cooldownRemainingMs + 100);
+			return;
+		}
+
+		this.diagBusy = true;
+		this.beginInflight();
+		const abort = this.beginProactive();
+		try {
+			const doc = editor.document;
+			const line = Math.min(diag.line, doc.lineCount);
+			const from = Math.max(1, line - DIAG_CONTEXT_LINES);
+			const to = Math.min(doc.lineCount, line + DIAG_CONTEXT_LINES);
+			const sel: CodeSelection = {
+				startLine: line,
+				endLine: line,
+				text: doc.getText(new vscode.Range(line - 1, 0, line - 1, Number.MAX_SAFE_INTEGER)),
+				before: from < line ? doc.getText(new vscode.Range(from - 1, 0, line - 1, 0)) : undefined,
+				after: to > line ? doc.getText(new vscode.Range(line, 0, to, Number.MAX_SAFE_INTEGER)) : undefined,
+			};
+			const result = await this.service.explainDiagnostic(
+				doc, sel,
+				{ message: diag.message, severity: diag.severity === 0 ? 'error' : 'warning', line, code: diag.code === undefined ? undefined : String(diag.code) },
+				`diag:${uri}:${hash}`,
+				{ signal: abort.signal },
+			);
+			if (result.status === 'ok' && result.source === 'model') {
+				this.diagSeen.add(hash);
+				this.proactiveBudget.commit(`diag:${hash}`);
+				this.pushEntry(assistantMessage(++this.nextId, 'error', result.text, {
+					model: this.settings.ollamaModel, dismissible: true,
+				}));
+			} else if (result.status === 'error' && result.kind !== 'cancelled') {
+				// Model trouble should not spam: mark seen so we don't retry a
+				// flood of identical explanations, and log it for diagnosis.
+				this.diagSeen.add(hash);
+				getLogger().info(`proactive diag: failed kind=${result.kind}`);
+			}
+		} finally {
+			this.diagBusy = false;
+			this.endInflight();
+		}
+	}
+
+	private scheduleInsight(delay = INSIGHT_DEBOUNCE_MS): void {
+		if (this.insightTimer) {
+			clearTimeout(this.insightTimer);
+		}
+		this.insightTimer = setTimeout(() => {
+			this.insightTimer = undefined;
+			void this.evaluateInsight();
+		}, delay);
+	}
+
+	private async evaluateInsight(): Promise<void> {
+		const editor = vscode.window.activeTextEditor;
+		const document = editor?.document;
+		if (!document || this.insightBusy || !this.settings.proactiveEnabled || this.settings.proactiveLevel === 'errors-only') {
+			return;
+		}
+		const hash = hashContent(document.getText());
+		if (hash === this.lastInsightHash) {
+			return; // identical content already asked — save a wasted request
+		}
+		const key = `insight:${document.uri.toString()}:${hash}`;
+		const verdict = this.proactiveBudget.check(key);
+		if (verdict !== 'allow') {
+			if (verdict === 'cooldown') {
+				this.scheduleInsight(this.proactiveBudget.cooldownRemainingMs + 100);
+			}
+			return;
+		}
+		this.lastInsightHash = hash;
+
+		this.insightBusy = true;
+		this.beginInflight();
+		const abort = this.beginProactive();
+		try {
+			const result = await this.service.findInsight(document, hash, { signal: abort.signal });
+			if (result.status === 'ok' && result.source === 'model' && result.text.trim().toUpperCase() !== 'NONE') {
+				this.proactiveBudget.commit(key);
+				this.pushEntry(assistantMessage(++this.nextId, 'insight', result.text, {
+					model: this.settings.ollamaModel, dismissible: true,
+				}));
+			}
+		} finally {
+			this.insightBusy = false;
+			this.endInflight();
+		}
+	}
+
+	// After a Learn explanation lands, ask at most one understanding check
+	// per selection — gated by the same proactive budget.
+	private async maybeKnowledgeCheck(t: SelectionTarget, selDoc: DocLike): Promise<void> {
+		if (!this.settings.proactiveEnabled) {
+			return;
+		}
+		const doneKey = `check:${t.uri}:${t.sel.startLine}-${t.sel.endLine}`;
+		if (this.knowledgeCheckDone.has(doneKey) || this.pendingQuestion) {
+			return;
+		}
+		const key = `kcheck:${t.uri}:${t.sel.startLine}-${t.sel.endLine}`;
+		if (this.proactiveBudget.check(key) !== 'allow') {
+			return;
+		}
+		this.knowledgeCheckDone.add(doneKey);
+		this.beginInflight();
+		const abort = this.beginProactive();
+		try {
+			const result = await this.service.generateQuestion(selDoc, t.sel, { signal: abort.signal });
+			if (result.status === 'ok' && result.source === 'model') {
+				this.proactiveBudget.commit(key);
+				this.pendingQuestion = { question: result.text, sel: t.sel, selDoc };
+				this.pushEntry(assistantMessage(++this.nextId, 'question', result.text, {
+					model: this.settings.ollamaModel, dismissible: true,
+				}));
+			}
+		} finally {
+			this.endInflight();
+		}
+	}
+
+	// --- Conversation rendering ---
+
+	private pushEntry(entry: ChatEntry): void {
+		this.entries.push(entry);
+		while (this.entries.length > MAX_FEED_ENTRIES) {
+			this.entries.shift();
+		}
+		this.renderAll();
+	}
+
+	private watchingLabel(): string {
+		if (this.target.kind === 'selection') {
+			return `${this.target.fileName} · ${this.linesLabel(this.target)}`;
+		}
+		const editor = vscode.window.activeTextEditor;
+		return editor ? fileNameOf(editor.document) : '';
+	}
+
 	private render(state: ViewState): void {
-		this.panel.webview.html = renderDocument(state, makeNonce());
+		// The state renders as the pinned context card above the feed.
+		this.contextState = state;
+		this.renderAll();
+	}
+
+	private renderAll(): void {
+		this.panel.webview.html = renderConversationDocument({
+			context: this.contextState,
+			entries: this.entries,
+			watching: this.watchingLabel(),
+			model: this.settings.ollamaModel,
+			paused: !this.settings.proactiveEnabled,
+			generating: this.inflightCount > 0,
+			proactiveCount: this.proactiveBudget.messagesPosted,
+			proactiveMax: this.settings.proactiveMaxPerSession,
+		}, makeNonce());
 	}
 
 	dispose(): void {
 		ExplanationPanel.current = undefined;
 		this.currentAbort?.abort();
+		this.proactiveAbort?.abort();
+		if (this.diagTimer) {
+			clearTimeout(this.diagTimer);
+		}
+		if (this.insightTimer) {
+			clearTimeout(this.insightTimer);
+		}
 		if (this.debounceTimer) {
 			clearTimeout(this.debounceTimer);
 		}

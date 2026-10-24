@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { WEBVIEW_MESSAGE_TYPES, WebviewMessageType } from '../messages';
-import { renderBody, renderDocument, ViewState } from '../view';
+import { renderBody, renderConversation, renderDocument, ViewState } from '../view';
+import { assistantMessage, userMessage } from '../conversation';
 
 test('model text is HTML-escaped before rendering', () => {
 	const html = renderBody({
@@ -128,4 +129,63 @@ test('partial model state streams escaped text with no action buttons', () => {
 	assert.ok(!html.includes('data-action'), 'controls hidden while streaming');
 	assert.ok(!html.includes('<script>bad'), 'partial model output is escaped');
 	assert.match(html, /Partial &lt;script&gt;bad&lt;\/script&gt; text/);
+});
+
+test('conversation view renders toolbar, context card, feed and composer', () => {
+	const html = renderConversation({
+		watching: 'app.ts',
+		model: 'qwen3:8b',
+		paused: false,
+		generating: false,
+		proactiveCount: 2,
+		proactiveMax: 12,
+		context: { kind: 'empty', fileName: 'app.ts' },
+		entries: [
+			userMessage(1, 'what does this do?'),
+			assistantMessage(2, 'insight', 'This loop is O(n^2).', { dismissible: true }),
+			assistantMessage(3, 'answer', 'It maps over the list.'),
+		],
+	});
+	assert.match(html, /Watching app\.ts/);
+	assert.match(html, /data-action="pause"/);
+	assert.match(html, /what does this do\?/);
+	assert.match(html, /tag insight/);
+	assert.match(html, /data-action="dismiss" data-id="2"/);
+	assert.match(html, /id="tancode-chat"/);
+	assert.match(html, /data-action="send-chat"/);
+	assert.ok(!html.includes('data-action="stop"'), 'stop hidden when idle');
+});
+
+test('paused + generating chrome renders pause-resume and stop', () => {
+	const html = renderConversation({
+		model: 'm', paused: true, generating: true, proactiveCount: 0, proactiveMax: 12,
+		entries: [assistantMessage(1, 'info', 'Generation stopped.')],
+	});
+	assert.match(html, /data-action="resume"/);
+	assert.match(html, /data-action="stop"/);
+	assert.match(html, /proactive paused/);
+});
+
+test('dismissed and partial entries render correctly', () => {
+	const html = renderConversation({
+		model: 'm', paused: false, generating: false, proactiveCount: 0, proactiveMax: 12,
+		entries: [
+			assistantMessage(1, 'insight', 'hidden', { dismissed: true }),
+			assistantMessage(2, 'answer', 'still typing', { partial: true }),
+		],
+	});
+	assert.ok(!html.includes('hidden'), 'dismissed entry is skipped');
+	assert.match(html, /still typing/);
+});
+
+test('feed entries escape user and model text', () => {
+	const html = renderConversation({
+		model: 'm', paused: false, generating: false, proactiveCount: 0, proactiveMax: 12,
+		entries: [
+			userMessage(1, '<img src=x onerror=alert(1)>'),
+			assistantMessage(2, 'insight', '<script>bad</script>'),
+		],
+	});
+	assert.ok(!html.includes('<img src=x'), 'user text escaped');
+	assert.ok(!html.includes('<script>bad'), 'assistant text escaped');
 });

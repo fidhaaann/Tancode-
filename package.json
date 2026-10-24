@@ -51,7 +51,7 @@
         "tancode.ollama.model": {
           "type": "string",
           "default": "qwen3:8b",
-          "description": "Ollama model used for explanations. Must already be pulled — see `ollama list`."
+          "description": "Ollama model used for explanations. Must already be pulled \u2014 see `ollama list`."
         },
         "tancode.maxSourceBytes": {
           "type": "number",
@@ -69,6 +69,32 @@
           "type": "boolean",
           "default": true,
           "description": "Show the deterministic rule-based explanation (clearly labelled, not AI-generated) when the model is unavailable."
+        },
+        "tancode.proactive.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let Tancode proactively explain errors and code insights. Pause/resume also available in the panel."
+        },
+        "tancode.proactive.level": {
+          "type": "string",
+          "enum": [
+            "all",
+            "errors-only"
+          ],
+          "default": "all",
+          "description": "How chatty proactive assistance is: 'all' explains errors and code insights; 'errors-only' only explains editor errors and warnings."
+        },
+        "tancode.proactive.cooldownSeconds": {
+          "type": "number",
+          "default": 90,
+          "minimum": 5,
+          "description": "Minimum seconds between proactive assistant messages."
+        },
+        "tancode.proactive.maxPerSession": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "description": "Maximum unsolicited proactive messages per panel session."
         }
       }
     }

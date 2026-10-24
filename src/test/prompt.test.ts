@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
 	buildAssessmentPrompt,
+	buildChatPrompt,
+	buildDiagnosticPrompt,
+	buildInsightPrompt,
 	buildPrompt,
 	buildQuestionPrompt,
 	buildSelectionPrompt,
@@ -95,4 +98,40 @@ test('parseSections splits markdown headings and drops empty ones', () => {
 test('parseSections returns undefined for unstructured output', () => {
 	assert.equal(parseSections('just a paragraph\nand another'), undefined);
 	assert.equal(parseSections('## Only one\nwith a body'), undefined);
+});
+
+test('diagnostic prompt marks the diagnostic confirmed and causes inferred', () => {
+	const parts = buildDiagnosticPrompt(
+		{ fileName: 'a.ts', languageId: 'typescript', text: 'x.y' },
+		{ startLine: 1, endLine: 1, text: 'x.y' },
+		{ message: 'Object is possibly undefined', severity: 'error', line: 1, code: 'TS2532' },
+	);
+	assert.match(parts.prompt, /confirmed error at line 1/);
+	assert.match(parts.prompt, /<diagnostic>\n\[TS2532\] Object is possibly undefined/);
+	assert.match(parts.prompt, /inference|likely/i);
+	assert.match(parts.prompt, /follow-up question/i);
+});
+
+test('insight prompt asks for one grounded insight or NONE', () => {
+	const parts = buildInsightPrompt({ fileName: 'a.ts', languageId: 'typescript', text: 'code' });
+	assert.match(parts.prompt, /ONE concise insight/);
+	assert.match(parts.prompt, /reply with exactly: NONE/);
+	assert.match(parts.prompt, /<file>\ncode\n<\/file>/);
+});
+
+test('chat prompt bounds history and marks user question untrusted', () => {
+	const parts = buildChatPrompt(
+		{ fileName: 'a.ts', languageId: 'typescript', text: 'file body' },
+		{ startLine: 1, endLine: 2, text: 'x' },
+		'what does x do?',
+		[{ role: 'user', text: 'hi' }, { role: 'assistant', text: 'hello' }],
+	);
+	assert.match(parts.prompt, /<history>\nUser: hi\nTancode: hello\n<\/history>/);
+	assert.match(parts.prompt, /<user_question>\nwhat does x do\?\n<\/user_question>/);
+	assert.match(parts.prompt, /<selection/);
+	// without a selection, the file body is the context
+	const noSel = buildChatPrompt(
+		{ fileName: 'a.ts', languageId: 'typescript', text: 'file body' },
+		undefined, 'q', []);
+	assert.match(noSel.prompt, /<file>\nfile body\n<\/file>/);
 });
