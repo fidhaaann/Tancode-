@@ -1,0 +1,23 @@
+# Source files (compiled output in out/ is included)
+src/
+tsconfig.json
+
+# Development configuration
+.vscode/
+.env
+.env.*
+!.env.example
+.gitignore
+
+# Dependencies (restored at runtime by VS Code, not bundled)
+node_modules/
+
+# Logs and test output
+logs/
+*.log
+coverage/
+.vscode-test/
+
+# OS files
+.DS_Store
+Thumbs.db
