@@ -1,0 +1,37 @@
+{
+  "name": "tancode",
+  "displayName": "Tancode",
+  "description": "A lightweight, local-first coding companion that helps developers learn technical concepts while vibe coding and understand errors without relying on their coding agent for every explanation.",
+  "version": "0.0.1",
+  "publisher": "fidhaaann",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other",
+    "Education"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tancode.helloWorld",
+        "title": "Tancode: Hello World"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "typecheck": "tsc -p ./ --noEmit",
+    "pretest": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.9.3"
+  }
+}
