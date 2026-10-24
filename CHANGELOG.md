@@ -4,6 +4,13 @@ Record each meaningful project change during the event, newest first. Update thi
 
 ## Event build log
 
+## 2026-10-25T02:45:00+05:30 — Fix: panel no longer wipes when it gains focus + Ollama health probe
+
+- Changed: `src/explanationPanel.ts` ignores active-editor changes where the webview itself holds focus (clicking the panel previously fired the event with `undefined` and `update()` rendered the "No active editor" state, losing the explanation); `buildService()` now probes `GET /api/tags` (4s timeout) and logs `ollama health:` reachability + installed model names to the `Tancode` output channel.
+- Why: User reported the panel closing when clicked and still showing only the rule-based summary.
+- Validation: `npm run compile`, `npm run typecheck`, `npm test` — 34/34 pass. Focus behavior needs desktop VS Code to verify.
+- Limitations: Health result is logged only; a dedicated health UI is out of scope.
+
 ## 2026-10-25T02:10:00+05:30 — Fix: default timeout too short for local inference + diagnostics
 
 - Changed: `tancode.requestTimeoutMs` default 30s → 120s (with `stream:false` the entire generation must finish inside the budget; qwen3:8b on CPU regularly exceeds 30s → silent-feeling fallback); `updateSeq` staleness guard in `src/explanationPanel.ts`; `parseResponse` also strips an unterminated `<think>` tail; service logging now includes endpoint, status, and duration; new `src/test/e2e.test.ts` drives real HTTP + real fetch through to `renderBody`.

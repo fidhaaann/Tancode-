@@ -65,7 +65,16 @@ export class ExplanationPanel {
 		this.service = this.buildService();
 
 		this.disposables.push(
-			vscode.window.onDidChangeActiveTextEditor(() => this.scheduleUpdate()),
+			vscode.window.onDidChangeActiveTextEditor(editor => {
+				// Clicking into this webview makes VS Code report no active text
+				// editor while our panel holds focus — that is not a file switch,
+				// so keep the current explanation instead of clearing to the
+				// "no editor" state.
+				if (!editor && this.panel.active) {
+					return;
+				}
+				this.scheduleUpdate();
+			}),
 			vscode.workspace.onDidChangeTextDocument(event => {
 				if (this.lastDoc && event.document.uri.toString() === this.lastDoc.uri) {
 					this.scheduleUpdate();
@@ -93,6 +102,18 @@ export class ExplanationPanel {
 
 	private buildService(): ExplanationService {
 		const client = new OllamaClient(this.settings.ollamaBaseUrl, this.settings.requestTimeoutMs);
+		// Report Ollama reachability + installed models to the output channel
+		// every time the service is (re)built — the first thing to check when
+		// the panel keeps falling back to rules.
+		const log = getLogger();
+		const probe = new OllamaClient(this.settings.ollamaBaseUrl, 4000);
+		void probe.checkHealth().then(health => {
+			if (health.reachable) {
+				log.info(`ollama health: reachable at ${client.baseUrl}, models=[${health.models.join(', ')}]`);
+			} else {
+				log.info(`ollama health: unreachable at ${client.baseUrl}, kind=${health.error?.kind ?? 'unknown'} message=${health.error?.message ?? ''}`);
+			}
+		});
 		return new ExplanationService(
 			client,
 			this.cache,
@@ -103,7 +124,7 @@ export class ExplanationPanel {
 				maxSourceBytes: this.settings.maxSourceBytes,
 				fallbackToRules: this.settings.fallbackToRules,
 			},
-			getLogger(),
+			log,
 		);
 	}
 
@@ -122,6 +143,11 @@ export class ExplanationPanel {
 		const document = editor?.document;
 
 		if (!document) {
+			// Same guard for update()s triggered by other listeners while the
+			// webview itself is focused.
+			if (this.panel.active && this.lastDoc) {
+				return;
+			}
 			this.lastDoc = undefined;
 			this.render({ kind: 'noEditor' });
 			return;
