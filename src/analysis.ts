@@ -147,11 +147,11 @@ const IMPORT_PATTERNS: Record<string, RegExp> = {
 	ruby: /^\s*require(?:_relative)?\s+['"]([^'"]+)['"]/,
 };
 
-export function isSupported(document: vscode.TextDocument): boolean {
+export function isSupported(document: { languageId: string }): boolean {
 	return SUPPORTED_LANGUAGES.has(document.languageId);
 }
 
-export function explain(document: vscode.TextDocument): FileExplanation | undefined {
+export function explain(document: Pick<vscode.TextDocument, 'languageId' | 'fileName' | 'uri' | 'getText'>): FileExplanation | undefined {
 	if (!isSupported(document)) {
 		return undefined;
 	}
