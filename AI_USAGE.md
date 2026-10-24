@@ -6,6 +6,7 @@ Use Codex during the hackathon and briefly document its actual contribution here
 
 | Date and time with timezone | Tool / model, if known | Task | Assistance and affected files | Human review / corrections | Validation and result |
 | --- | --- | --- | --- | --- | --- |
+| 2026-10-25T03:00:00+05:30 | Devin (Cognition AI) | Retry/detail button fix | Mode-aware `lastDoc`, `summary` handler + Back-to-summary button, loading on forced retry | Pending | `compile`, `typecheck`, `npm test` — 34/34 pass; interactive clicks need desktop VS Code |
 | 2026-10-25T02:45:00+05:30 | Devin (Cognition AI) | Panel focus wipe + Ollama health probe | `explanationPanel.ts` focus guard, `/api/tags` health logging | Pending | `compile`, `typecheck`, `npm test` — 34/34 pass; focus behavior needs desktop VS Code |
 | 2026-10-25T02:10:00+05:30 | Devin (Cognition AI) | Debug Ollama integration on Windows | Timeout default 120s, updateSeq staleness guard, unterminated-`<think>` handling, richer logging, real-HTTP e2e tests | Pending | `npm ci`, `compile`, `typecheck`, `npm test` — 34/34 pass incl. e2e; no live model available |
 | 2026-10-24T22:50:00+05:30 | Devin (Cognition AI) | Ollama diagnostics + source labeling | Added `src/log.ts`, source badges in `src/view.ts`, service logging, 4 new tests | Pending | `npm ci`, `compile`, `typecheck`, `npm test` — 29/29 pass; no live model available |

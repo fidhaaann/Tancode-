@@ -4,6 +4,13 @@ Record each meaningful project change during the event, newest first. Update thi
 
 ## Event build log
 
+## 2026-10-25T03:00:00+05:30 — Fix: Retry/detail buttons actually dispatch requests
+
+- Changed: `src/explanationPanel.ts` — `lastDoc` now tracks `mode`, so clicking "Explain in more detail" no longer hits the uri+version early-return (the real reason the button did nothing); added a `summary` message handler; forced retries always render the loading state (removing the buttons and preventing double-clicks). `src/view.ts` — detail mode shows a "Back to summary" button that restores the cached short explanation.
+- Why: The message names matched and `postMessage` worked, but `update()` early-returned on unchanged uri+version so `detail` requests were never dispatched; retries ran but showed no loading state.
+- Validation: `npm run compile`, `npm run typecheck`, `npm test` — 34/34 pass.
+- Limitations: Interactive button clicks still need verification in desktop VS Code.
+
 ## 2026-10-25T02:45:00+05:30 — Fix: panel no longer wipes when it gains focus + Ollama health probe
 
 - Changed: `src/explanationPanel.ts` ignores active-editor changes where the webview itself holds focus (clicking the panel previously fired the event with `undefined` and `update()` rendered the "No active editor" state, losing the explanation); `buildService()` now probes `GET /api/tags` (4s timeout) and logs `ollama health:` reachability + installed model names to the `Tancode` output channel.
