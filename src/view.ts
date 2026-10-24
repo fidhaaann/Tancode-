@@ -58,6 +58,7 @@ function header(fileName: string, languageName: string, extra = ''): string {
 }
 
 const DETAIL_BUTTON = '<button class="btn" data-action="detail">Explain in more detail</button>';
+const SUMMARY_BUTTON = '<button class="btn" data-action="summary">Back to summary</button>';
 const RETRY_BUTTON = '<button class="btn" data-action="retry">Retry</button>';
 
 function modelText(text: string): string {
@@ -109,7 +110,7 @@ export function renderBody(state: ViewState): string {
 				<h3>What this file does</h3>
 				${modelText(state.text)}
 			</section>
-			<div class="actions">${state.mode === 'summary' ? DETAIL_BUTTON : ''} ${RETRY_BUTTON}</div>
+			<div class="actions">${state.mode === 'summary' ? DETAIL_BUTTON : SUMMARY_BUTTON} ${RETRY_BUTTON}</div>
 			<p class="muted foot">Generated locally on your machine — the file text only went to ${escapeHtml(state.model)} via Ollama at your configured local endpoint. Verify before relying on it.</p>`;
 
 		case 'rules': {

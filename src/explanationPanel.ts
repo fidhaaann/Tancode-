@@ -34,7 +34,7 @@ export class ExplanationPanel {
 	private service: ExplanationService;
 	private mode: ExplainMode = 'summary';
 	private debounceTimer: NodeJS.Timeout | undefined;
-	private lastDoc: { uri: string; version: number } | undefined;
+	private lastDoc: { uri: string; version: number; mode: ExplainMode } | undefined;
 	private updateSeq = 0;
 
 	static createOrShow(context: vscode.ExtensionContext): void {
@@ -90,6 +90,9 @@ export class ExplanationPanel {
 			this.panel.webview.onDidReceiveMessage(message => {
 				if (message?.type === 'detail') {
 					this.mode = 'detail';
+					this.scheduleUpdate(0);
+				} else if (message?.type === 'summary') {
+					this.mode = 'summary';
 					this.scheduleUpdate(0);
 				} else if (message?.type === 'retry') {
 					this.scheduleUpdate(0, true);
@@ -156,10 +159,11 @@ export class ExplanationPanel {
 		if (!force
 			&& this.lastDoc
 			&& document.uri.toString() === this.lastDoc.uri
-			&& document.version === this.lastDoc.version) {
+			&& document.version === this.lastDoc.version
+			&& this.mode === this.lastDoc.mode) {
 			return;
 		}
-		this.lastDoc = { uri: document.uri.toString(), version: document.version };
+		this.lastDoc = { uri: document.uri.toString(), version: document.version, mode: this.mode };
 
 		const fileName = fileNameOf(document);
 		const languageName = document.languageId;
@@ -174,9 +178,10 @@ export class ExplanationPanel {
 			return;
 		}
 
-		// Cached results skip the loading flash.
+		// Cached results skip the loading flash; forced retries always show it
+		// (and the loading render removes the buttons, preventing double-clicks).
 		const key = ExplanationCache.key(document.uri.toString(), document.version, this.settings.ollamaModel, this.mode);
-		if (!this.cache.get(key)) {
+		if (force || !this.cache.get(key)) {
 			this.render({ kind: 'loading', fileName, languageName, model: this.settings.ollamaModel, mode: this.mode });
 		}
 
