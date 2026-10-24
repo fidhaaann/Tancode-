@@ -25,8 +25,21 @@
       {
         "command": "tancode.explainCurrentFile",
         "title": "Tancode: Explain Current File"
+      },
+      {
+        "command": "tancode.explainSelectedCode",
+        "title": "Tancode: Explain Selected Code"
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "tancode.explainSelectedCode",
+          "when": "editorHasSelection",
+          "group": "tancode@1"
+        }
+      ]
+    },
     "configuration": {
       "title": "Tancode",
       "properties": {

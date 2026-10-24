@@ -1,7 +1,16 @@
 import type { FileExplanation } from '../analysis';
 import { ExplanationCache } from './cache';
 import { OllamaClient, OllamaError, OllamaErrorKind } from './ollama';
-import { buildPrompt, parseResponse, ExplainMode } from './prompt';
+import {
+	buildAssessmentPrompt,
+	buildPrompt,
+	buildQuestionPrompt,
+	buildSelectionPrompt,
+	CodeSelection,
+	ExplainMode,
+	parseResponse,
+	SelectionMode,
+} from './prompt';
 
 // Minimal document shape — satisfied by vscode.TextDocument, but keeping
 // this module free of the vscode import so it can run in plain Node tests.
@@ -48,6 +57,10 @@ export interface ServiceLogger {
 	info(message: string): void;
 }
 
+function baseName(fileName: string): string {
+	return fileName.split(/[\\/]/).pop() ?? fileName;
+}
+
 export class ExplanationService {
 	private readonly inflight = new Map<string, Promise<ExplanationResult>>();
 
@@ -61,15 +74,9 @@ export class ExplanationService {
 	) {}
 
 	async explain(doc: DocLike, mode: ExplainMode, force = false): Promise<ExplanationResult> {
-		if (!this.isSupportedLang(doc.languageId)) {
-			return { status: 'unsupported' };
-		}
-		const text = doc.getText();
-		if (text.trim().length === 0) {
-			return { status: 'empty' };
-		}
-		if (text.length > this.options.maxSourceBytes) {
-			return { status: 'tooLarge', bytes: text.length, limit: this.options.maxSourceBytes };
+		const preflight = this.preflight(doc.getText(), doc);
+		if (preflight) {
+			return preflight;
 		}
 
 		const key = ExplanationCache.key(doc.uri.toString(), doc.version, this.options.model, mode);
@@ -86,43 +93,135 @@ export class ExplanationService {
 			}
 		}
 
-		const work = this.runInference(doc, mode, key).finally(() => {
-			this.inflight.delete(key);
-		});
+		const parts = buildPrompt(
+			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
+			mode,
+		);
+		const work = this.runInference(parts, `file=${baseName(doc.fileName)} mode=${mode} bytes=${doc.getText().length}`, key, doc)
+			.finally(() => {
+				this.inflight.delete(key);
+			});
 		this.inflight.set(key, work);
 		return work;
 	}
 
-	private async runInference(doc: DocLike, mode: ExplainMode, key: string): Promise<ExplanationResult> {
-		const { system, prompt } = buildPrompt(
+	async explainSelection(
+		doc: DocLike,
+		sel: CodeSelection,
+		mode: SelectionMode,
+		force = false,
+	): Promise<ExplanationResult> {
+		// The fallback analyses just the selection, not the whole file.
+		const selDoc: DocLike = { ...doc, getText: () => sel.text };
+		const payload = sel.text.length + (sel.before?.length ?? 0) + (sel.after?.length ?? 0);
+		const preflight = this.preflight(sel.text, selDoc, payload);
+		if (preflight) {
+			return preflight;
+		}
+
+		const key = ExplanationCache.key(
+			doc.uri.toString(), doc.version, this.options.model,
+			`sel:${mode}:${sel.startLine}-${sel.endLine}`,
+		);
+		if (!force) {
+			const hit = this.cache.get(key);
+			if (hit) {
+				return hit.status === 'ok' && hit.source === 'model'
+					? { ...hit, fromCache: true }
+					: hit;
+			}
+			const pending = this.inflight.get(key);
+			if (pending) {
+				return pending;
+			}
+		}
+
+		const parts = buildSelectionPrompt(
 			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
+			sel,
 			mode,
 		);
+		const work = this.runInference(parts, `file=${baseName(doc.fileName)} mode=sel-${mode} lines=${sel.startLine}-${sel.endLine} bytes=${payload}`, key, selDoc)
+			.finally(() => {
+				this.inflight.delete(key);
+			});
+		this.inflight.set(key, work);
+		return work;
+	}
 
+	// Practice mode: fresh question every call — quizzes are not cached.
+	async generateQuestion(doc: DocLike, sel: CodeSelection): Promise<ExplanationResult> {
+		const selDoc: DocLike = { ...doc, getText: () => sel.text };
+		if (sel.text.trim().length === 0) {
+			return { status: 'empty' };
+		}
+		const parts = buildQuestionPrompt(
+			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
+			sel,
+		);
+		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=question lines=${sel.startLine}-${sel.endLine} bytes=${sel.text.length}`, undefined, selDoc);
+	}
+
+	async assessAnswer(
+		doc: DocLike,
+		sel: CodeSelection,
+		question: string,
+		answer: string,
+	): Promise<ExplanationResult> {
+		const selDoc: DocLike = { ...doc, getText: () => sel.text };
+		const parts = buildAssessmentPrompt(
+			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
+			sel,
+			question,
+			answer,
+		);
+		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=assess lines=${sel.startLine}-${sel.endLine} bytes=${sel.text.length}`, undefined, selDoc);
+	}
+
+	private preflight(text: string, doc: DocLike, payloadBytes?: number): ExplanationResult | undefined {
+		if (!this.isSupportedLang(doc.languageId)) {
+			return { status: 'unsupported' };
+		}
+		if (text.trim().length === 0) {
+			return { status: 'empty' };
+		}
+		const bytes = payloadBytes ?? text.length;
+		if (bytes > this.options.maxSourceBytes) {
+			return { status: 'tooLarge', bytes, limit: this.options.maxSourceBytes };
+		}
+		return undefined;
+	}
+
+	private async runInference(
+		parts: { system: string; prompt: string },
+		logTag: string,
+		key: string | undefined,
+		fallbackDoc: DocLike,
+	): Promise<ExplanationResult> {
 		let result: ExplanationResult;
 		const startedAt = Date.now();
 		const elapsed = () => `${Date.now() - startedAt}ms`;
-		this.logger?.info(`explain request: file=${doc.fileName.split(/[\\/]/).pop()} mode=${mode} model=${this.options.model} endpoint=${this.client.baseUrl} bytes=${doc.getText().length}`);
+		this.logger?.info(`explain request: ${logTag} model=${this.options.model} endpoint=${this.client.baseUrl}`);
 		try {
-			const raw = await this.client.generate(this.options.model, system, prompt);
+			const raw = await this.client.generate(this.options.model, parts.system, parts.prompt);
 			const text = parseResponse(raw);
 			if (text.length === 0) {
-				result = this.errorResult(doc, 'malformed', 'The model returned no explanation text (possibly reasoning-only output).');
+				result = this.errorResult(fallbackDoc, 'malformed', 'The model returned no explanation text (possibly reasoning-only output).');
 			} else {
-				this.logger?.info(`explain success: model=${this.options.model} mode=${mode} status=200 duration=${elapsed()} chars=${text.length}`);
+				this.logger?.info(`explain success: model=${this.options.model} ${logTag} status=200 duration=${elapsed()} chars=${text.length}`);
 				result = { status: 'ok', source: 'model', text, fromCache: false };
 			}
 		} catch (err) {
 			if (err instanceof OllamaError) {
 				this.logger?.info(`explain failed: kind=${err.kind}${err.status ? ` status=${err.status}` : ''} duration=${elapsed()} message=${err.message}`);
-				result = this.errorResult(doc, err.kind, err.message);
+				result = this.errorResult(fallbackDoc, err.kind, err.message);
 			} else {
 				this.logger?.info(`explain failed: kind=unavailable duration=${elapsed()} message=${(err as Error)?.message ?? String(err)}`);
-				result = this.errorResult(doc, 'unavailable', `Unexpected error: ${(err as Error)?.message ?? String(err)}`);
+				result = this.errorResult(fallbackDoc, 'unavailable', `Unexpected error: ${(err as Error)?.message ?? String(err)}`);
 			}
 		}
 
-		if (result.status === 'ok') {
+		if (key !== undefined && result.status === 'ok') {
 			this.cache.set(key, result);
 		}
 		return result;

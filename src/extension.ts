@@ -10,7 +10,16 @@ export function activate(context: vscode.ExtensionContext) {
 		ExplanationPanel.createOrShow(context);
 	});
 
-	context.subscriptions.push(helloWorld, explainCurrentFile);
+	const explainSelectedCode = vscode.commands.registerCommand('tancode.explainSelectedCode', () => {
+		const editor = vscode.window.activeTextEditor;
+		if (!editor || editor.selection.isEmpty || editor.document.getText(editor.selection).trim().length === 0) {
+			void vscode.window.showInformationMessage('Select some code first, then run "Tancode: Explain Selected Code".');
+			return;
+		}
+		ExplanationPanel.explainSelection(context, editor);
+	});
+
+	context.subscriptions.push(helloWorld, explainCurrentFile, explainSelectedCode);
 }
 
 export function deactivate() {}

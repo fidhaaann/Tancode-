@@ -131,6 +131,60 @@ test('empty model response is a malformed error, not a crash', async () => {
 	}
 });
 
+const sel = { startLine: 3, endLine: 9, text: 'export function helper() {}', before: 'import x from "x";', after: 'main();' };
+
+test('explainSelection sends only the selection and caches by mode+range', async () => {
+	const { service, calls } = makeService(async () => 'It maps keys.');
+	const res = await service.explainSelection(doc(), sel, 'explain');
+	assert.equal(res.status, 'ok');
+	assert.match(calls[0], /<selection file="\/w\/app.ts" language="typescript" lines="3-9">/);
+	assert.ok(calls[0].includes('export function helper()'), 'selection text is sent');
+	assert.ok(!calls[0].includes('export function main() {}'), 'whole file text is not resent');
+	assert.match(calls[0], /<context>/);
+
+	// Same selection+mode hits cache; different mode or range re-runs.
+	await service.explainSelection(doc(), sel, 'explain');
+	assert.equal(calls.length, 1);
+	await service.explainSelection(doc(), sel, 'learn');
+	assert.equal(calls.length, 2);
+	await service.explainSelection(doc(), { ...sel, endLine: 10 }, 'learn');
+	assert.equal(calls.length, 3);
+});
+
+test('explainSelection short-circuits empty and oversized selections', async () => {
+	const { service, calls } = makeService(async () => 'never');
+	assert.equal((await service.explainSelection(doc(), { ...sel, text: '   ' }, 'explain')).status, 'empty');
+	const big = await service.explainSelection(doc(), { ...sel, text: 'x'.repeat(2048) }, 'explain');
+	assert.equal(big.status, 'tooLarge');
+	assert.equal(calls.length, 0);
+});
+
+test('explainSelection error falls back to rules over the selection', async () => {
+	const { service } = makeService(async () => { throw new OllamaError('timeout', 'slow'); });
+	const res = await service.explainSelection(doc(), sel, 'explain');
+	assert.equal(res.status, 'error');
+	if (res.status === 'error') {
+		assert.ok(res.fallback, 'rule-based fallback over the selection');
+	}
+});
+
+test('generateQuestion returns model text and is never cached', async () => {
+	const { service, calls } = makeService(async () => 'What does map return?');
+	const res = await service.generateQuestion(doc(), sel);
+	assert.equal(res.status, 'ok');
+	assert.match(calls[0], /ONE short question/);
+	await service.generateQuestion(doc(), sel);
+	assert.equal(calls.length, 2, 'each question is a fresh request');
+});
+
+test('assessAnswer sends question and answer, returns model text', async () => {
+	const { service, calls } = makeService(async () => '## What you got right\nMostly.');
+	const res = await service.assessAnswer(doc(), sel, 'What does map return?', 'a new array');
+	assert.equal(res.status, 'ok');
+	assert.match(calls[0], /<question>\nWhat does map return\?\n<\/question>/);
+	assert.match(calls[0], /<answer>\na new array\n<\/answer>/);
+});
+
 test('unsupported, empty, and oversized docs short-circuit before inference', async () => {
 	const { service, calls } = makeService(async () => 'never called');
 	const unsupported = new ExplanationService(
