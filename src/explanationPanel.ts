@@ -1,31 +1,44 @@
 import * as vscode from 'vscode';
-import { explain, isSupported, FileExplanation } from './analysis';
-
-// Escape anything derived from the workspace before inserting it into
-// the webview: file contents and names are untrusted input.
-function escapeHtml(value: string): string {
-	return value
-		.replace(/&/g, '&amp;')
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;')
-		.replace(/'/g, '&#39;');
-}
+import { explain as rulesExplain, isSupported } from './analysis';
+import { ExplanationCache } from './model/cache';
+import { OllamaClient } from './model/ollama';
+import { ExplainMode } from './model/prompt';
+import { ExplanationResult, ExplanationService } from './model/service';
+import { getSettings, TancodeSettings } from './settings';
+import { renderDocument, ViewState } from './view';
 
 const PANEL_VIEW_TYPE = 'tancode.explanation';
+const DEBOUNCE_MS = 350;
+
+function fileNameOf(document: vscode.TextDocument): string {
+	return document.fileName.split(/[\\/]/).pop() ?? 'untitled';
+}
+
+function makeNonce(): string {
+	const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+	let nonce = '';
+	for (let i = 0; i < 32; i++) {
+		nonce += chars.charAt(Math.floor(Math.random() * chars.length));
+	}
+	return nonce;
+}
 
 export class ExplanationPanel {
 	private static current: ExplanationPanel | undefined;
 
 	private readonly panel: vscode.WebviewPanel;
 	private readonly disposables: vscode.Disposable[] = [];
-	private lastAnalyzed: { uri: string; version: number } | undefined;
+	private readonly cache = new ExplanationCache<ExplanationResult>();
+	private settings: TancodeSettings;
+	private service: ExplanationService;
+	private mode: ExplainMode = 'summary';
+	private debounceTimer: NodeJS.Timeout | undefined;
+	private lastDoc: { uri: string; version: number } | undefined;
 
 	static createOrShow(context: vscode.ExtensionContext): void {
-		const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
 		if (ExplanationPanel.current) {
 			ExplanationPanel.current.panel.reveal(vscode.ViewColumn.Beside);
-			ExplanationPanel.current.update(vscode.window.activeTextEditor?.document);
+			ExplanationPanel.current.scheduleUpdate(0);
 			return;
 		}
 
@@ -34,27 +47,41 @@ export class ExplanationPanel {
 			'Tancode',
 			vscode.ViewColumn.Beside,
 			{
-				enableScripts: false,
+				enableScripts: true,
 				localResourceRoots: [],
 				retainContextWhenHidden: true,
 			}
 		);
 
-		ExplanationPanel.current = new ExplanationPanel(panel, context);
-		ExplanationPanel.current.update(vscode.window.activeTextEditor?.document);
-		void column;
+		ExplanationPanel.current = new ExplanationPanel(panel);
+		ExplanationPanel.current.scheduleUpdate(0);
 	}
 
-	private constructor(panel: vscode.WebviewPanel, context: vscode.ExtensionContext) {
+	private constructor(panel: vscode.WebviewPanel) {
 		this.panel = panel;
+		this.settings = getSettings();
+		this.service = this.buildService();
 
 		this.disposables.push(
-			vscode.window.onDidChangeActiveTextEditor(editor => {
-				this.update(editor?.document);
-			}),
+			vscode.window.onDidChangeActiveTextEditor(() => this.scheduleUpdate()),
 			vscode.workspace.onDidChangeTextDocument(event => {
-				if (this.lastAnalyzed && event.document.uri.toString() === this.lastAnalyzed.uri) {
-					this.update(event.document);
+				if (this.lastDoc && event.document.uri.toString() === this.lastDoc.uri) {
+					this.scheduleUpdate();
+				}
+			}),
+			vscode.workspace.onDidChangeConfiguration(event => {
+				if (event.affectsConfiguration('tancode')) {
+					this.settings = getSettings();
+					this.service = this.buildService();
+					this.scheduleUpdate(0);
+				}
+			}),
+			this.panel.webview.onDidReceiveMessage(message => {
+				if (message?.type === 'detail') {
+					this.mode = 'detail';
+					this.scheduleUpdate(0);
+				} else if (message?.type === 'retry') {
+					this.scheduleUpdate(0, true);
 				}
 			})
 		);
@@ -62,128 +89,115 @@ export class ExplanationPanel {
 		this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
 	}
 
-	private update(document: vscode.TextDocument | undefined): void {
-		// Skip re-analysis when nothing relevant changed.
-		if (document
-			&& this.lastAnalyzed
-			&& document.uri.toString() === this.lastAnalyzed.uri
-			&& document.version === this.lastAnalyzed.version) {
+	private buildService(): ExplanationService {
+		const client = new OllamaClient(this.settings.ollamaBaseUrl, this.settings.requestTimeoutMs);
+		return new ExplanationService(
+			client,
+			this.cache,
+			doc => rulesExplain(doc as vscode.TextDocument),
+			languageId => isSupported({ languageId }),
+			{
+				model: this.settings.ollamaModel,
+				maxSourceBytes: this.settings.maxSourceBytes,
+				fallbackToRules: this.settings.fallbackToRules,
+			}
+		);
+	}
+
+	private scheduleUpdate(delay = DEBOUNCE_MS, force = false): void {
+		if (this.debounceTimer) {
+			clearTimeout(this.debounceTimer);
+		}
+		this.debounceTimer = setTimeout(() => {
+			this.debounceTimer = undefined;
+			void this.update(force);
+		}, delay);
+	}
+
+	private async update(force = false): Promise<void> {
+		const editor = vscode.window.activeTextEditor;
+		const document = editor?.document;
+
+		if (!document) {
+			this.lastDoc = undefined;
+			this.render({ kind: 'noEditor' });
 			return;
 		}
 
-		let explanation: FileExplanation | undefined;
-		if (document) {
-			explanation = explain(document);
+		if (!force
+			&& this.lastDoc
+			&& document.uri.toString() === this.lastDoc.uri
+			&& document.version === this.lastDoc.version) {
+			return;
+		}
+		this.lastDoc = { uri: document.uri.toString(), version: document.version };
+
+		const fileName = fileNameOf(document);
+		const languageName = document.languageId;
+
+		// Cheap states render immediately without a model call.
+		if (!isSupported(document)) {
+			this.render({ kind: 'unsupported', fileName, languageId: document.languageId });
+			return;
+		}
+		if (document.getText().trim().length === 0) {
+			this.render({ kind: 'empty', fileName });
+			return;
 		}
 
-		if (document && explanation) {
-			this.lastAnalyzed = { uri: document.uri.toString(), version: document.version };
-		} else {
-			this.lastAnalyzed = document
-				? { uri: document.uri.toString(), version: document.version }
-				: undefined;
+		// Cached results skip the loading flash.
+		const key = ExplanationCache.key(document.uri.toString(), document.version, this.settings.ollamaModel, this.mode);
+		if (!this.cache.get(key)) {
+			this.render({ kind: 'loading', fileName, languageName, model: this.settings.ollamaModel, mode: this.mode });
 		}
 
-		this.panel.webview.html = this.render(document, explanation);
-	}
-
-	private render(document: vscode.TextDocument | undefined, explanation: FileExplanation | undefined): string {
-		let body: string;
-		if (!document) {
-			body = `<div class="empty">
-				<h2>No active editor</h2>
-				<p>Open a source file to see a Tancode explanation of what it does.</p>
-			</div>`;
-		} else if (!isSupported(document)) {
-			const name = escapeHtml(document.fileName.split(/[\\/]/).pop() ?? 'untitled');
-			const lang = escapeHtml(document.languageId);
-			body = `<div class="empty">
-				<h2>Unsupported file</h2>
-				<p><code>${name}</code> uses language <code>${lang}</code>, which Tancode does not explain yet.</p>
-				<p>Open a supported source file (TypeScript, JavaScript, Python, Java, Go, Rust, and similar) to see an explanation.</p>
-			</div>`;
-		} else if (!explanation) {
-			const name = escapeHtml(document.fileName.split(/[\\/]/).pop() ?? 'untitled');
-			body = `<div class="empty">
-				<h2>Nothing to explain</h2>
-				<p><code>${name}</code> is empty or too large to explain quickly.</p>
-			</div>`;
-		} else {
-			const symbols = explanation.symbols.length
-				? `<ul class="symbols">${explanation.symbols.map(s =>
-					`<li><span class="kind">${escapeHtml(s.kind)}</span> <code>${escapeHtml(s.name)}</code> <span class="loc">line ${s.line}</span></li>`
-				).join('')}</ul>`
-				: '<p class="muted">No top-level declarations detected.</p>';
-
-			const details = `<details class="details">
-				<summary>More detail</summary>
-				<ul>${explanation.details.map(d => `<li>${escapeHtml(d)}</li>`).join('')}</ul>
-			</details>`;
-
-			const imports = explanation.imports.length
-				? `<p class="muted">Imports: ${explanation.imports.map(i => `<code>${escapeHtml(i)}</code>`).join(', ')}</p>`
-				: '';
-
-			body = `<header>
-				<h2>${escapeHtml(explanation.fileName)}</h2>
-				<p class="muted">${escapeHtml(explanation.languageName)} · ${explanation.nonBlankLineCount} lines</p>
-			</header>
-			<section>
-				<h3>What this file does</h3>
-				<p>${escapeHtml(explanation.summary)}</p>
-			</section>
-			<section>
-				<h3>Key declarations</h3>
-				${symbols}
-				${imports}
-			</section>
-			${details}`;
+		// Guard against stale results landing after another editor switch.
+		const result = await this.service.explain(document, this.mode, force);
+		if (this.lastDoc?.uri !== document.uri.toString()) {
+			return;
 		}
 
-		return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tancode</title>
-<style>
-	body {
-		font-family: var(--vscode-font-family);
-		font-size: var(--vscode-font-size);
-		color: var(--vscode-foreground);
-		background: var(--vscode-panel-background, transparent);
-		padding: 16px 20px;
-		line-height: 1.5;
+		switch (result.status) {
+			case 'ok':
+				if (result.source === 'model') {
+					this.render({
+						kind: 'model', fileName, languageName,
+						model: this.settings.ollamaModel, mode: this.mode,
+						text: result.text, fromCache: result.fromCache,
+					});
+				} else {
+					this.render({ kind: 'rules', fileName, languageName, explanation: result.explanation });
+				}
+				break;
+			case 'empty':
+				this.render({ kind: 'empty', fileName });
+				break;
+			case 'unsupported':
+				this.render({ kind: 'unsupported', fileName, languageId: document.languageId });
+				break;
+			case 'tooLarge':
+				this.render({ kind: 'tooLarge', fileName, bytes: result.bytes, limit: result.limit });
+				break;
+			case 'error':
+				this.render({
+					kind: 'error', fileName, languageName,
+					model: this.settings.ollamaModel,
+					message: result.message, hint: result.hint,
+					fallback: result.fallback,
+				});
+				break;
+		}
 	}
-	h2 { font-size: 1.1em; margin: 0 0 2px; }
-	h3 { font-size: 0.95em; margin: 18px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--vscode-descriptionForeground); }
-	section { margin-bottom: 4px; }
-	.muted { color: var(--vscode-descriptionForeground); margin: 2px 0; }
-	.empty { text-align: center; padding: 40px 12px; color: var(--vscode-descriptionForeground); }
-	.empty h2 { color: var(--vscode-foreground); }
-	ul.symbols { list-style: none; padding: 0; margin: 6px 0; }
-	ul.symbols li { padding: 2px 0; }
-	.kind {
-		display: inline-block; min-width: 5.5em;
-		color: var(--vscode-textLink-foreground);
-		font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.03em;
-	}
-	.loc { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
-	details.details { margin-top: 14px; border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); padding-top: 10px; }
-	details.details summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
-	details.details ul { margin: 8px 0 0; padding-left: 20px; white-space: pre-wrap; }
-	code { font-family: var(--vscode-editor-font-family, monospace); }
-</style>
-</head>
-<body>
-${body}
-</body>
-</html>`;
+
+	private render(state: ViewState): void {
+		this.panel.webview.html = renderDocument(state, makeNonce());
 	}
 
 	dispose(): void {
 		ExplanationPanel.current = undefined;
+		if (this.debounceTimer) {
+			clearTimeout(this.debounceTimer);
+		}
 		this.panel.dispose();
 		for (const d of this.disposables) {
 			d.dispose();

@@ -26,7 +26,39 @@
         "command": "tancode.explainCurrentFile",
         "title": "Tancode: Explain Current File"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Tancode",
+      "properties": {
+        "tancode.ollama.baseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434",
+          "description": "Base URL of the local Ollama server. Tancode never calls external AI services."
+        },
+        "tancode.ollama.model": {
+          "type": "string",
+          "default": "qwen3:8b",
+          "description": "Ollama model used for explanations. Must already be pulled — see `ollama list`."
+        },
+        "tancode.maxSourceBytes": {
+          "type": "number",
+          "default": 65536,
+          "minimum": 1024,
+          "description": "Files larger than this many bytes are not sent to the model."
+        },
+        "tancode.requestTimeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 1000,
+          "description": "Timeout for each Ollama request in milliseconds."
+        },
+        "tancode.fallbackToRuleBased": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the deterministic rule-based explanation (clearly labelled, not AI-generated) when the model is unavailable."
+        }
+      }
+    }
   },
   "scripts": {
     "precompile": "node ./scripts/preflight.js",
@@ -35,7 +67,8 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "typecheck": "tsc -p ./ --noEmit",
-    "pretest": "npm run compile"
+    "pretest": "npm run compile",
+    "test": "node --test \"out/test/*.test.js\""
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
