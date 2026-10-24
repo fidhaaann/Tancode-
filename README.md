@@ -4,7 +4,7 @@ A lightweight, local-first coding companion that helps developers learn technica
 
 Tancode is an educational assistant, not a code reviewer or autonomous coding agent. It explains problems and presents possible approaches; the developer decides what to do.
 
-This repository currently contains the initial VS Code extension scaffold: a compilable TypeScript extension with a single `Tancode: Hello World` command. AI features are intentionally not implemented yet.
+This repository currently contains the extension scaffold plus the Milestone 1 explanation panel: `Tancode: Explain Current File` opens a `Tancode` panel that shows a rule-based, deterministic explanation of the active source file (summary, key declarations, expandable detail). It updates as you switch editor tabs and re-analyzes only when the document changes. Explanations are generated locally from the file text — no AI model, no network. `Tancode: Hello World` remains as a scaffold sanity check.
 
 ## Getting started
 
@@ -24,8 +24,9 @@ To run the extension:
 1. Open this folder in desktop VS Code.
 2. Run `npm ci` and `npm run compile` once.
 3. Press F5 to launch the Extension Development Host (`Run Extension` launch configuration; it runs the `npm: watch` build task first and waits for the TypeScript watch build to report ready).
-4. In the Extension Development Host window, open the Command Palette (Ctrl+Shift+P) and run `Tancode: Hello World`.
-5. An information message confirms Tancode is running.
+4. In the Extension Development Host window, open the Command Palette (Ctrl+Shift+P) and run `Tancode: Explain Current File`.
+5. The `Tancode` panel opens beside the editor and explains the active file — summary, key declarations, and a "More detail" section. Switch tabs and the panel follows the active file automatically.
+6. `Tancode: Hello World` still works as a scaffold sanity check.
 
 ## Troubleshooting
 

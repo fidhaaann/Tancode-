@@ -21,6 +21,10 @@
       {
         "command": "tancode.helloWorld",
         "title": "Tancode: Hello World"
+      },
+      {
+        "command": "tancode.explainCurrentFile",
+        "title": "Tancode: Explain Current File"
       }
     ]
   },
