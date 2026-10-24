@@ -90,7 +90,16 @@ export class OllamaClient {
 			res = await this.fetchImpl(this.url('/api/generate'), {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ model, system, prompt, stream: false }),
+				body: JSON.stringify({
+					model,
+					system,
+					prompt,
+					stream: false,
+					// Reasoning models (qwen3) spend most of their time on a hidden
+					// thinking pass. Disabling it is several times faster for short
+					// explanations; ignored by models/servers without thinking.
+					think: false,
+				}),
 				signal: AbortSignal.timeout(this.timeoutMs),
 			});
 		} catch (err) {

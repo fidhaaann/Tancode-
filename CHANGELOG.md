@@ -4,6 +4,13 @@ Record each meaningful project change during the event, newest first. Update thi
 
 ## Event build log
 
+## 2026-10-25T03:30:00+05:30 — Faster Qwen replies + webview click logging
+
+- Changed: `src/model/ollama.ts` sends `think: false` with every generate request — qwen3-style reasoning models spend most of their latency on a hidden thinking pass; disabling it is several times faster (ignored by non-thinking models and older Ollama versions). `src/explanationPanel.ts` logs every incoming webview message (`webview message: type=…`) so dead-button reports can be told apart: a click that logs nothing means stale build/script, not dispatch.
+- Why: User reports Retry/detail still not working (merged fix may not be rebuilt locally) and asks for faster responses.
+- Validation: `npm run compile`, `npm run typecheck`, `npm test` — 34/34 pass; e2e asserts `think: false` reaches the wire.
+- Limitations: If clicks still log nothing after pulling + recompiling + restarting the Extension Host, the build is stale.
+
 ## 2026-10-25T03:00:00+05:30 — Fix: Retry/detail buttons actually dispatch requests
 
 - Changed: `src/explanationPanel.ts` — `lastDoc` now tracks `mode`, so clicking "Explain in more detail" no longer hits the uri+version early-return (the real reason the button did nothing); added a `summary` message handler; forced retries always render the loading state (removing the buttons and preventing double-clicks). `src/view.ts` — detail mode shows a "Back to summary" button that restores the cached short explanation.
