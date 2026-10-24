@@ -19,6 +19,7 @@ function recorder() {
 		pause: () => calls.push('pause'),
 		resume: () => calls.push('resume'),
 		dismiss: id => calls.push(`dismiss:${id}`),
+		clear: () => calls.push('clear'),
 	};
 	return { calls, actions };
 }
@@ -36,6 +37,7 @@ test('every declared message type dispatches to exactly one handler', () => {
 		stop: 'stop',
 		pause: 'pause',
 		resume: 'resume',
+		clear: 'clear',
 	};
 	for (const type of WEBVIEW_MESSAGE_TYPES.filter(t => t !== 'submit-answer' && t !== 'chat' && t !== 'dismiss')) {
 		const { calls, actions } = recorder();

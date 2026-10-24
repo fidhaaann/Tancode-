@@ -5,7 +5,9 @@ import {
 	buildChatPrompt,
 	buildDiagnosticPrompt,
 	buildInsightPrompt,
+	buildOrientationPrompt,
 	buildPrompt,
+	buildWrapupPrompt,
 	buildQuestionPrompt,
 	buildSelectionPrompt,
 	parseResponse,
@@ -134,4 +136,34 @@ test('chat prompt bounds history and marks user question untrusted', () => {
 		{ fileName: 'a.ts', languageId: 'typescript', text: 'file body' },
 		undefined, 'q', []);
 	assert.match(noSel.prompt, /<file>\nfile body\n<\/file>/);
+});
+
+test('orientation prompt is grounded only in observed facts', () => {
+	const parts = buildOrientationPrompt('Project name: demo\nLanguages seen: typescript (5)');
+	assert.match(parts.prompt, /facts that were\s*actually observed|actually observed on disk/);
+	assert.match(parts.prompt, /<project_facts>\nProject name: demo/);
+	assert.match(parts.prompt, /Do not invent files, behavior, or structure/);
+});
+
+test('wrapup prompt carries session evidence and explain-back questions', () => {
+	const parts = buildWrapupPrompt({
+		projectFacts: 'Project name: demo',
+		touchedFiles: ['a.ts', 'b.ts'],
+		history: [{ role: 'user', text: 'why a promise?' }],
+	});
+	assert.match(parts.prompt, /<touched_files>\na\.ts\nb\.ts/);
+	assert.match(parts.prompt, /<session_conversation>/);
+	assert.match(parts.prompt, /Can you explain it back to me/);
+	assert.match(parts.prompt, /two optional questions/);
+	assert.match(parts.prompt, /Never claim they mastered/);
+});
+
+test('learn + diagnostic prompts include simplified-guidance only when enabled', () => {
+	const doc2 = { fileName: 'a.ts', languageId: 'typescript', text: 'x' };
+	const sel = { startLine: 1, endLine: 1, text: 'x' };
+	const diag = { message: 'm', severity: 'error' as const, line: 1 };
+	assert.match(buildSelectionPrompt(doc2, sel, 'learn', true).prompt, /In plain terms/);
+	assert.ok(!buildSelectionPrompt(doc2, sel, 'learn', false).prompt.includes('In plain terms'));
+	assert.match(buildDiagnosticPrompt(doc2, sel, diag, true).prompt, /plain-language/);
+	assert.ok(!buildDiagnosticPrompt(doc2, sel, diag, false).prompt.includes('plain-language'));
 });

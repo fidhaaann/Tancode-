@@ -453,7 +453,7 @@ export function renderConversation(v: ConversationView): string {
 	<div class="toolbar">
 		<h2>Tancode</h2>
 		<span class="watching muted">${v.watching ? `Watching ${escapeHtml(v.watching)}` : 'No file being watched'}${pausedNote}</span>
-		${stopBtn}${toggleBtn}
+		${stopBtn}${toggleBtn}<button class="btn" data-action="clear">Clear</button>
 	</div>
 	${context}
 	<div class="feed">${feed}</div>

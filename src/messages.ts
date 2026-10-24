@@ -16,7 +16,8 @@ export type WebviewMessageType =
 	| 'stop'
 	| 'pause'
 	| 'resume'
-	| 'dismiss';
+	| 'dismiss'
+	| 'clear';
 
 export interface WebviewActions {
 	detail(): void;
@@ -33,12 +34,13 @@ export interface WebviewActions {
 	pause(): void;
 	resume(): void;
 	dismiss(id: number): void;
+	clear(): void;
 }
 
 export const WEBVIEW_MESSAGE_TYPES: readonly WebviewMessageType[] = [
 	'detail', 'summary', 'retry', 'explain', 'learn', 'practice',
 	'new-question', 'submit-answer', 'file',
-	'chat', 'stop', 'pause', 'resume', 'dismiss',
+	'chat', 'stop', 'pause', 'resume', 'dismiss', 'clear',
 ];
 
 // Returns true when the message was recognized and dispatched. Anything
@@ -99,6 +101,9 @@ export function dispatchWebviewMessage(message: unknown, actions: WebviewActions
 			return true;
 		case 'resume':
 			actions.resume();
+			return true;
+		case 'clear':
+			actions.clear();
 			return true;
 		case 'dismiss': {
 			const id = (message as { id?: unknown }).id;

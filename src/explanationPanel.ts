@@ -10,7 +10,8 @@ import { getLogger } from './log';
 import { renderConversationDocument, ViewState } from './view';
 import { assistantMessage, ChatEntry, pushTurn, HistoryTurn, stateEntry, userMessage } from './conversation';
 import { routeMessage } from './chat';
-import { diagKey, DiagLike, hashContent, pickDiagnostic, ProactiveBudget } from './proactive';
+import { diagKey, DiagLike, effectiveCooldownSeconds, hashContent, pickDiagnostic, ProactiveBudget } from './proactive';
+import { collectProjectFacts, formatFacts, ProjectFacts } from './project';
 
 const PANEL_VIEW_TYPE = 'tancode.explanation';
 const DEBOUNCE_MS = 350;
@@ -21,6 +22,7 @@ const MAX_CHAT_CHARS = 2000;
 const DIAG_DEBOUNCE_MS = 800;
 const INSIGHT_DEBOUNCE_MS = 1500;
 const MAX_FEED_ENTRIES = 100;
+const MAX_TOUCHED_FILES = 40;
 // A diagnostic insight looks at the reported line plus this much context
 // on each side — enough to explain, small enough to stay fast.
 const DIAG_CONTEXT_LINES = 3;
@@ -98,6 +100,18 @@ export class ExplanationPanel {
 	private lastInsightHash: string | undefined;
 	private insightBusy = false;
 	private insightTimer: NodeJS.Timeout | undefined;
+	// JARVIS context: orientation runs once per panel session; touchedFiles
+	// feeds the session wrap-up; projectFacts is collected lazily and shared
+	// by the orientation and recap prompts.
+	private orientationDone = false;
+	private orientationBusy = false;
+	private projectFacts: ProjectFacts | undefined;
+	private touchedFiles: string[] = [];
+
+	// `Tancode: Clear Conversation` command path — no-op when no panel exists.
+	static clearChat(): void {
+		ExplanationPanel.current?.clearConversation();
+	}
 
 	static createOrShow(context: vscode.ExtensionContext): void {
 		if (ExplanationPanel.current) {
@@ -174,7 +188,7 @@ export class ExplanationPanel {
 	private get proactiveBudget(): ProactiveBudget {
 		if (!this.budget) {
 			this.budget = new ProactiveBudget(
-				this.settings.proactiveCooldownSeconds * 1000,
+				effectiveCooldownSeconds(this.settings.proactiveFrequency, this.settings.proactiveCooldownSeconds) * 1000,
 				this.settings.proactiveMaxPerSession,
 			);
 		}
@@ -233,6 +247,7 @@ export class ExplanationPanel {
 					pause: () => this.setProactiveEnabled(false),
 					resume: () => this.setProactiveEnabled(true),
 					dismiss: id => this.dismissEntry(id),
+					clear: () => this.clearConversation(),
 				});
 			}),
 			// Proactive trigger 1: editor diagnostics — debounced; only the
@@ -255,6 +270,7 @@ export class ExplanationPanel {
 				if (document !== vscode.window.activeTextEditor?.document || !isSupported(document)) {
 					return;
 				}
+				this.noteTouchedFile(document);
 				this.scheduleInsight();
 			})
 		);
@@ -323,6 +339,8 @@ export class ExplanationPanel {
 				model: this.settings.ollamaModel,
 				maxSourceBytes: this.settings.maxSourceBytes,
 				fallbackToRules: this.settings.fallbackToRules,
+				depth: this.settings.explanationDepth,
+				simplified: this.settings.simplifiedExplanations,
 			},
 			log,
 		);
@@ -418,6 +436,7 @@ export class ExplanationPanel {
 			this.render({ kind: 'empty', fileName });
 			return;
 		}
+		this.noteTouchedFile(document);
 
 		// Cached results skip the loading flash; forced retries always show it
 		// (and the loading render removes the buttons, preventing double-clicks).
@@ -459,6 +478,7 @@ export class ExplanationPanel {
 		}
 
 		this.renderResult(result, { fileName, languageName, target: 'file', mode: this.fileMode });
+		this.maybeOrientation();
 	}
 
 	private async updateSelection(force = false): Promise<void> {
@@ -726,6 +746,11 @@ export class ExplanationPanel {
 					'I proactively explain editor errors and occasionally flag a learning moment in code you save — never more than a few at a time. ' +
 					'You can pause me from the toolbar, say "pause proactive", or tune tancode.proactive.* in Settings.'));
 				return;
+			case 'wrap-up':
+				return this.runWrapup();
+			case 'clear':
+				this.clearConversation();
+				return;
 			case 'quiz-answer':
 				return this.answerPendingQuestion(trimmed);
 			default:
@@ -837,6 +862,106 @@ export class ExplanationPanel {
 			entry.dismissed = true;
 			this.renderAll();
 		}
+	}
+
+	// Wipe the conversation (feed + bounded history) — session memory only,
+	// nothing is persisted either way. Command + chat phrase both land here.
+	clearConversation(): void {
+		this.entries = [];
+		this.history = [];
+		this.pendingQuestion = undefined;
+		this.pushEntry(assistantMessage(++this.nextId, 'info', 'Conversation cleared — what should we look at next?'));
+	}
+
+	private noteTouchedFile(document: vscode.TextDocument): void {
+		const name = fileNameOf(document);
+		if (this.touchedFiles[this.touchedFiles.length - 1] !== name) {
+			this.touchedFiles.push(name);
+			if (this.touchedFiles.length > MAX_TOUCHED_FILES) {
+				this.touchedFiles.shift();
+			}
+		}
+	}
+
+	private getProjectFacts(): ProjectFacts | undefined {
+		if (this.projectFacts) {
+			return this.projectFacts;
+		}
+		const editor = vscode.window.activeTextEditor;
+		if (!editor) {
+			return undefined;
+		}
+		const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri) ?? vscode.workspace.workspaceFolders?.[0];
+		if (!folder) {
+			return undefined;
+		}
+		try {
+			this.projectFacts = collectProjectFacts(folder.uri.fsPath);
+			return this.projectFacts;
+		} catch {
+			return undefined;
+		}
+	}
+
+	// Stage A: once per panel session, post a project orientation built only
+	// from deterministic local facts. Counts as a proactive message.
+	private maybeOrientation(): void {
+		if (this.orientationDone || this.orientationBusy || !this.settings.proactiveEnabled) {
+			return;
+		}
+		const facts = this.getProjectFacts();
+		if (!facts) {
+			this.orientationDone = true;
+			return;
+		}
+		const factsText = formatFacts(facts);
+		const key = `orientation:${facts.root}:${hashContent(factsText)}`;
+		if (this.proactiveBudget.check('orientation') !== 'allow') {
+			this.orientationDone = true; // budget spent — don't nag later
+			return;
+		}
+		this.orientationDone = true;
+		this.orientationBusy = true;
+		this.beginInflight();
+		const abort = this.beginProactive();
+		void this.service.projectOrientation(factsText, key, { signal: abort.signal })
+			.then(result => {
+				if (result.status === 'ok' && result.source === 'model') {
+					this.proactiveBudget.commit('orientation');
+					this.pushEntry(assistantMessage(++this.nextId, 'insight', result.text, {
+						model: this.settings.ollamaModel, dismissible: true,
+					}));
+				}
+			})
+			.finally(() => {
+				this.orientationBusy = false;
+				this.endInflight();
+			});
+	}
+
+	// Stage: wrap-up — user asked for a recap; ground it in this session's
+	// touched files, project facts, and conversation history.
+	private async runWrapup(): Promise<void> {
+		const seq = ++this.updateSeq;
+		const abort = this.beginRequest();
+		const entryId = ++this.nextId;
+		this.pushEntry(assistantMessage(entryId, 'answer', '', { partial: true, model: this.settings.ollamaModel }));
+		const facts = this.getProjectFacts();
+		this.beginInflight();
+		let result: ExplanationResult;
+		try {
+			result = await this.service.sessionRecap({
+				projectFacts: facts ? formatFacts(facts) : 'No project facts collected this session.',
+				touchedFiles: this.touchedFiles,
+				history: this.history,
+			}, { signal: abort.signal });
+		} finally {
+			this.endInflight();
+		}
+		if (seq !== this.updateSeq) {
+			return;
+		}
+		this.finishChatEntry(entryId, result);
 	}
 
 	private setProactiveEnabled(on: boolean): void {
@@ -976,7 +1101,7 @@ export class ExplanationPanel {
 	// After a Learn explanation lands, ask at most one understanding check
 	// per selection — gated by the same proactive budget.
 	private async maybeKnowledgeCheck(t: SelectionTarget, selDoc: DocLike): Promise<void> {
-		if (!this.settings.proactiveEnabled) {
+		if (!this.settings.proactiveEnabled || !this.settings.interactiveQuestions) {
 			return;
 		}
 		const doneKey = `check:${t.uri}:${t.sel.startLine}-${t.sel.endLine}`;

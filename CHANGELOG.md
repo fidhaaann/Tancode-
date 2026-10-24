@@ -4,6 +4,15 @@ Record each meaningful project change during the event, newest first. Update thi
 
 ## Event build log
 
+## 2026-10-25T04:30:00+05:30 — JARVIS mentor: project orientation, WHAT/HOW/WHY teaching, wrap-up, richer controls
+
+- Changed: Tancode now opens with a one-time **project orientation** grounded only in deterministic local facts — `src/project.ts` collects the package manifest (scripts/deps), config files, top-level directories, language mix (bounded 2-level scan, node_modules etc. excluded), entry-point candidates, and a README excerpt; `buildOrientationPrompt` forbids inventing structure; `ExplanationService.projectOrientation` caches by facts hash and posts once per panel session through the same proactive budget.
+- Added: **WHAT/HOW/WHY teaching frame** (`teachingFrame` in `src/model/prompt.ts`) applied to substantial explanations — the detail file prompt, Learn mode, and diagnostic notes now ask for what/how/why plus, when `tancode.explanation.simplified` is on, a plain-language version and a real-world analogy with its caveat. Short chat answers stay conversational — the frame is never forced.
+- Added: **session wrap-up** — "wrap up" / "I'm done" / "recap what we built" routes to `service.sessionRecap` (never cached), grounded in session evidence only: project facts, files saved this session (bounded list tracked on saves), and conversation history. Ends with a "Can you explain it back to me?" section with two optional questions; the prompt forbids claiming mastery.
+- Added: **user controls** — `tancode.proactive.frequency` (low=300s / balanced=90s / high=30s / custom→`cooldownSeconds`, mapped by `effectiveCooldownSeconds`), `tancode.explanation.depth` (detailed ≈1.5x output budgets via `capFor`), `tancode.explanation.simplified`, `tancode.explanation.interactiveQuestions` (gates knowledge checks), and `Tancode: Clear Conversation` (command, toolbar Clear button, or "clear the chat") wiping feed + history.
+- Validation: `npm run compile`, `npm run typecheck`, `npm test` — 102/102 pass; new tests cover `collectProjectFacts` on a fixture project, facts formatting bounds, frequency mapping, orientation/wrapup/teach-frame prompts, orientation caching + recap non-caching, detailed-depth caps, and wrap-up/clear intent routing.
+- Limitations: live orientation/recap generation and the Clear button were not exercised in a running VS Code (no desktop/Ollama on the build VM); they need the user's Extension Development Host check.
+
 ## 2026-10-25T03:30:00+05:30 — Proactive conversational mentor
 
 - Changed: the panel is now a conversation — a pinned context card (current file/selection explanation) above a chronological feed of user messages, streamed answers, and tagged assistant notes (learning moment / error / question / feedback), with a chat composer at the bottom, a Stop-generation control while anything generates, a pause/resume toggle, and a footer showing the proactive message budget (`proactive N/12`).

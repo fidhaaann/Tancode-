@@ -32,6 +32,10 @@ Tancode talks only to a local [Ollama](https://ollama.com) server over its HTTP 
 | `tancode.proactive.level` | `all` | `all` = errors + learning moments; `errors-only` = only diagnostics |
 | `tancode.proactive.cooldownSeconds` | `90` | Minimum seconds between unsolicited messages |
 | `tancode.proactive.maxPerSession` | `12` | Cap on unsolicited messages per panel session |
+| `tancode.proactive.frequency` | `balanced` | `low` (300s) / `balanced` (90s) / `high` (30s) between proactive messages; `custom` uses `cooldownSeconds` |
+| `tancode.explanation.depth` | `concise` | `detailed` gives the model ~1.5x output room |
+| `tancode.explanation.simplified` | `true` | Include plain-language explanations and real-world analogies |
+| `tancode.explanation.interactiveQuestions` | `true` | Allow occasional knowledge-check questions |
 
 ## Getting started
 
@@ -73,7 +77,13 @@ The Tancode panel is a conversation, not a one-shot display. Above the chat feed
 - **After a Learn explanation** → at most one knowledge-check question per selection. Answer it in the chat box and get feedback on your reasoning.
 - Hard limits: a configurable cooldown between messages and a per-session cap (`proactive 3/12` shows in the footer). If the model is busy or finds nothing worth saying, nothing posts.
 
-The chat also understands natural commands routed through the same local model — "Explain what I'm looking at", "Give me the short version", "Why did this error happen?", "Pause proactive assistance", "Why are you telling me this?". Direct questions get direct answers, not forced lessons.
+The chat also understands natural commands routed through the same local model — "Explain what I'm looking at", "Give me the short version", "Why did this error happen?", "Pause proactive assistance", "Why are you telling me this?", "wrap up", "clear the chat". Direct questions get direct answers, not forced lessons. `Tancode: Clear Conversation` (or the Clear button) wipes the session feed and history.
+
+**Project orientation** — the first time the panel explains a supported file, Tancode also posts a one-time orientation built only from deterministic local facts (package manifest, config files, top-level directories, entry-point candidates, a README excerpt — never a repo-wide scan): what the project appears to be, the technologies, how the pieces likely connect, and the one concept worth learning first.
+
+**Learning recap** — say "wrap up", "I'm done", or "recap what we built" and Tancode summarizes the session from its own evidence (project facts, files you saved, the conversation): what was worked on, the concepts that came up, errors that taught something, and a short "Can you explain it back to me?" section with two optional questions.
+
+**Teaching style** — substantial explanations cover WHAT it does, HOW it works, and WHY it matters, at two levels: proper technical terminology plus a plain-language version with a real-world analogy where one genuinely helps (analogies that could mislead get caveats). Short answers stay conversational — the frame is never forced.
 
 ### Performance notes
 

@@ -34,3 +34,16 @@ test('ordinary questions and commands go direct', () => {
 test('control intents win over the quiz answer', () => {
 	assert.equal(routeMessage('pause proactive', true).type, 'pause');
 });
+
+test('explicit finish signals route to wrap-up; vague text does not', () => {
+	assert.equal(routeMessage("wrap up the session", false).type, 'wrap-up');
+	assert.equal(routeMessage("I'm done for now", false).type, 'wrap-up');
+	assert.equal(routeMessage('recap what we built', false).type, 'wrap-up');
+	// a save or ordinary sentence must never trigger a recap
+	assert.equal(routeMessage('the file saved fine', false).type, 'direct');
+});
+
+test('clear-chat phrases route to clear', () => {
+	assert.equal(routeMessage('clear the chat', false).type, 'clear');
+	assert.equal(routeMessage('reset conversation history', false).type, 'clear');
+});
