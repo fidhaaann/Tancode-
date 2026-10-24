@@ -117,3 +117,15 @@ test('quiz result shows question, own answer and assessment', () => {
 	assert.match(html, /Mostly right/);
 	assert.match(html, /data-action="new-question"/);
 });
+
+test('partial model state streams escaped text with no action buttons', () => {
+	const html = renderBody({
+		kind: 'model', fileName: 'a.ts', languageName: 'TypeScript', model: 'm',
+		target: 'file', mode: 'summary', text: 'Partial <script>bad</script> text',
+		fromCache: false, partial: true,
+	});
+	assert.match(html, /Generating/);
+	assert.ok(!html.includes('data-action'), 'controls hidden while streaming');
+	assert.ok(!html.includes('<script>bad'), 'partial model output is escaped');
+	assert.match(html, /Partial &lt;script&gt;bad&lt;\/script&gt; text/);
+});

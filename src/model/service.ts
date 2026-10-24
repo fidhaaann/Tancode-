@@ -1,6 +1,7 @@
 import type { FileExplanation } from '../analysis';
 import { ExplanationCache } from './cache';
 import { OllamaClient, OllamaError, OllamaErrorKind } from './ollama';
+import type { GenerateOptions } from './ollama';
 import {
 	buildAssessmentPrompt,
 	buildPrompt,
@@ -48,7 +49,29 @@ export function hintFor(kind: OllamaErrorKind, model: string, baseUrl: string): 
 			return 'Check that Ollama is healthy ("ollama list") and that the base URL points at the Ollama API port.';
 		case 'malformed':
 			return 'The endpoint answered but not as an Ollama server. Check the "tancode.ollama.baseUrl" setting.';
+		case 'cancelled':
+			return 'A newer update replaced this request. Nothing is wrong — retry if this was unexpected.';
 	}
+}
+
+// Per-mode output caps (num_predict). Short modes get short budgets —
+// generation time scales almost linearly with output length on a local
+// model, so an unbounded default wastes seconds on padded answers.
+const NUM_PREDICT: Record<string, number> = {
+	summary: 200,
+	detail: 500,
+	'sel-explain': 300,
+	'sel-learn': 500,
+	question: 180,
+	assess: 500,
+};
+
+// Optional streaming/cancellation channel from the panel. `signal` aborts
+// requests a newer update has made stale; `onToken` receives accumulated
+// text for progressive rendering.
+export interface RequestUi {
+	signal?: AbortSignal;
+	onToken?: (accumulated: string) => void;
 }
 
 // Optional logger — receives operational metadata only (URIs never logged,
@@ -73,22 +96,25 @@ export class ExplanationService {
 		private readonly logger?: ServiceLogger,
 	) {}
 
-	async explain(doc: DocLike, mode: ExplainMode, force = false): Promise<ExplanationResult> {
+	async explain(doc: DocLike, mode: ExplainMode, force = false, ui?: RequestUi): Promise<ExplanationResult> {
 		const preflight = this.preflight(doc.getText(), doc);
 		if (preflight) {
 			return preflight;
 		}
 
+		const tag = `file=${baseName(doc.fileName)} mode=${mode} bytes=${doc.getText().length}`;
 		const key = ExplanationCache.key(doc.uri.toString(), doc.version, this.options.model, mode);
 		if (!force) {
 			const hit = this.cache.get(key);
 			if (hit) {
+				this.logger?.info(`explain cache hit: ${tag}`);
 				return hit.status === 'ok' && hit.source === 'model'
 					? { ...hit, fromCache: true }
 					: hit;
 			}
 			const pending = this.inflight.get(key);
 			if (pending) {
+				this.logger?.info(`explain dedupe: ${tag}`);
 				return pending;
 			}
 		}
@@ -97,7 +123,7 @@ export class ExplanationService {
 			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
 			mode,
 		);
-		const work = this.runInference(parts, `file=${baseName(doc.fileName)} mode=${mode} bytes=${doc.getText().length}`, key, doc)
+		const work = this.runInference(parts, tag, key, doc, NUM_PREDICT[mode], ui)
 			.finally(() => {
 				this.inflight.delete(key);
 			});
@@ -110,6 +136,7 @@ export class ExplanationService {
 		sel: CodeSelection,
 		mode: SelectionMode,
 		force = false,
+		ui?: RequestUi,
 	): Promise<ExplanationResult> {
 		// The fallback analyses just the selection, not the whole file.
 		const selDoc: DocLike = { ...doc, getText: () => sel.text };
@@ -119,6 +146,7 @@ export class ExplanationService {
 			return preflight;
 		}
 
+		const tag = `file=${baseName(doc.fileName)} mode=sel-${mode} lines=${sel.startLine}-${sel.endLine} bytes=${payload}`;
 		const key = ExplanationCache.key(
 			doc.uri.toString(), doc.version, this.options.model,
 			`sel:${mode}:${sel.startLine}-${sel.endLine}`,
@@ -126,12 +154,14 @@ export class ExplanationService {
 		if (!force) {
 			const hit = this.cache.get(key);
 			if (hit) {
+				this.logger?.info(`explain cache hit: ${tag}`);
 				return hit.status === 'ok' && hit.source === 'model'
 					? { ...hit, fromCache: true }
 					: hit;
 			}
 			const pending = this.inflight.get(key);
 			if (pending) {
+				this.logger?.info(`explain dedupe: ${tag}`);
 				return pending;
 			}
 		}
@@ -141,7 +171,7 @@ export class ExplanationService {
 			sel,
 			mode,
 		);
-		const work = this.runInference(parts, `file=${baseName(doc.fileName)} mode=sel-${mode} lines=${sel.startLine}-${sel.endLine} bytes=${payload}`, key, selDoc)
+		const work = this.runInference(parts, tag, key, selDoc, NUM_PREDICT[`sel-${mode}`], ui)
 			.finally(() => {
 				this.inflight.delete(key);
 			});
@@ -150,7 +180,7 @@ export class ExplanationService {
 	}
 
 	// Practice mode: fresh question every call — quizzes are not cached.
-	async generateQuestion(doc: DocLike, sel: CodeSelection): Promise<ExplanationResult> {
+	async generateQuestion(doc: DocLike, sel: CodeSelection, ui?: RequestUi): Promise<ExplanationResult> {
 		const selDoc: DocLike = { ...doc, getText: () => sel.text };
 		if (sel.text.trim().length === 0) {
 			return { status: 'empty' };
@@ -159,7 +189,7 @@ export class ExplanationService {
 			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
 			sel,
 		);
-		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=question lines=${sel.startLine}-${sel.endLine} bytes=${sel.text.length}`, undefined, selDoc);
+		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=question lines=${sel.startLine}-${sel.endLine} bytes=${sel.text.length}`, undefined, selDoc, NUM_PREDICT.question, ui);
 	}
 
 	async assessAnswer(
@@ -167,6 +197,7 @@ export class ExplanationService {
 		sel: CodeSelection,
 		question: string,
 		answer: string,
+		ui?: RequestUi,
 	): Promise<ExplanationResult> {
 		const selDoc: DocLike = { ...doc, getText: () => sel.text };
 		const parts = buildAssessmentPrompt(
@@ -175,7 +206,7 @@ export class ExplanationService {
 			question,
 			answer,
 		);
-		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=assess lines=${sel.startLine}-${sel.endLine} bytes=${sel.text.length}`, undefined, selDoc);
+		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=assess lines=${sel.startLine}-${sel.endLine} bytes=${sel.text.length}`, undefined, selDoc, NUM_PREDICT.assess, ui);
 	}
 
 	private preflight(text: string, doc: DocLike, payloadBytes?: number): ExplanationResult | undefined {
@@ -197,13 +228,30 @@ export class ExplanationService {
 		logTag: string,
 		key: string | undefined,
 		fallbackDoc: DocLike,
+		numPredict: number,
+		ui?: RequestUi,
 	): Promise<ExplanationResult> {
 		let result: ExplanationResult;
 		const startedAt = Date.now();
 		const elapsed = () => `${Date.now() - startedAt}ms`;
-		this.logger?.info(`explain request: ${logTag} model=${this.options.model} endpoint=${this.client.baseUrl}`);
+		let firstTokenLogged = false;
+		const gen: GenerateOptions = {
+			numPredict,
+			keepAlive: '10m',
+			signal: ui?.signal,
+			onToken: ui?.onToken
+				? (text: string) => {
+					if (!firstTokenLogged) {
+						firstTokenLogged = true;
+						this.logger?.info(`explain first token: ${logTag} ttfb=${elapsed()}`);
+					}
+					ui.onToken!(text);
+				}
+				: undefined,
+		};
+		this.logger?.info(`explain request: ${logTag} model=${this.options.model} endpoint=${this.client.baseUrl} num_predict=${numPredict}`);
 		try {
-			const raw = await this.client.generate(this.options.model, parts.system, parts.prompt);
+			const raw = await this.client.generate(this.options.model, parts.system, parts.prompt, gen);
 			const text = parseResponse(raw);
 			if (text.length === 0) {
 				result = this.errorResult(fallbackDoc, 'malformed', 'The model returned no explanation text (possibly reasoning-only output).');

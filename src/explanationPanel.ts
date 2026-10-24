@@ -14,6 +14,9 @@ const DEBOUNCE_MS = 350;
 const CONTEXT_LINES = 8;
 const MAX_CONTEXT_CHARS = 2000;
 const MAX_ANSWER_CHARS = 4000;
+// Streamed chunks can arrive many times per second — re-render at most
+// this often so the webview stays responsive while text accumulates.
+const STREAM_PAINT_MS = 120;
 
 function fileNameOf(document: vscode.TextDocument): string {
 	return document.fileName.split(/[\\/]/).pop() ?? 'untitled';
@@ -60,6 +63,10 @@ export class ExplanationPanel {
 	private debounceTimer: NodeJS.Timeout | undefined;
 	private lastKey: string | undefined;
 	private updateSeq = 0;
+	// Aborts the in-flight model request when a newer update starts —
+	// frees the GPU instead of letting a stale generation run to
+	// completion for a result nobody will see.
+	private currentAbort: AbortController | undefined;
 
 	static createOrShow(context: vscode.ExtensionContext): void {
 		if (ExplanationPanel.current) {
@@ -279,6 +286,12 @@ export class ExplanationPanel {
 			: `lines ${t.sel.startLine}–${t.sel.endLine}`;
 	}
 
+	private beginRequest(): AbortController {
+		this.currentAbort?.abort();
+		this.currentAbort = new AbortController();
+		return this.currentAbort;
+	}
+
 	private async update(force = false): Promise<void> {
 		if (this.target.kind === 'selection') {
 			return this.updateSelection(force);
@@ -335,7 +348,21 @@ export class ExplanationPanel {
 		// (another editor switch, an edit, or a mode/force change on the same
 		// file). Any later update() entry bumps updateSeq, invalidating this one.
 		const seq = ++this.updateSeq;
-		const result = await this.service.explain(document, this.fileMode, force);
+		const abort = this.beginRequest();
+		let lastPaint = 0;
+		const onToken = (text: string): void => {
+			const now = Date.now();
+			if (seq !== this.updateSeq || now - lastPaint < STREAM_PAINT_MS) {
+				return;
+			}
+			lastPaint = now;
+			this.render({
+				kind: 'model', fileName, languageName,
+				model: this.settings.ollamaModel, target: 'file', mode: this.fileMode,
+				text, fromCache: false, partial: true,
+			});
+		};
+		const result = await this.service.explain(document, this.fileMode, force, { signal: abort.signal, onToken });
 		if (seq !== this.updateSeq || !this.lastKey?.startsWith(`file:${document.uri.toString()}:`)) {
 			return;
 		}
@@ -377,7 +404,21 @@ export class ExplanationPanel {
 		}
 
 		const seq = ++this.updateSeq;
-		const result = await this.service.explainSelection(selDoc, t.sel, this.selMode, force);
+		const abort = this.beginRequest();
+		let lastPaint = 0;
+		const onToken = (text: string): void => {
+			const now = Date.now();
+			if (seq !== this.updateSeq || now - lastPaint < STREAM_PAINT_MS) {
+				return;
+			}
+			lastPaint = now;
+			this.render({
+				kind: 'model', fileName: t.fileName, languageName: t.languageName, lines,
+				model: this.settings.ollamaModel, target: 'selection', mode: this.selMode,
+				text, fromCache: false, partial: true,
+			});
+		};
+		const result = await this.service.explainSelection(selDoc, t.sel, this.selMode, force, { signal: abort.signal, onToken });
 		if (seq !== this.updateSeq || this.lastKey !== key) {
 			return;
 		}
@@ -402,12 +443,13 @@ export class ExplanationPanel {
 		const t = this.target;
 		const lines = this.linesLabel(t);
 		const seq = ++this.updateSeq;
+		const abort = this.beginRequest();
 		this.render({
 			kind: 'loading', fileName: t.fileName, languageName: t.languageName, lines,
 			model: this.settings.ollamaModel, label: 'a practice question',
 		});
 
-		const result = await this.service.generateQuestion(this.selectionDoc(t), t.sel);
+		const result = await this.service.generateQuestion(this.selectionDoc(t), t.sel, { signal: abort.signal });
 		if (seq !== this.updateSeq) {
 			return;
 		}
@@ -450,12 +492,13 @@ export class ExplanationPanel {
 		const t = this.target;
 		const lines = this.linesLabel(t);
 		const seq = ++this.updateSeq;
+		const abort = this.beginRequest();
 		this.render({
 			kind: 'loading', fileName: t.fileName, languageName: t.languageName, lines,
 			model: this.settings.ollamaModel, label: 'feedback on your answer',
 		});
 
-		const result = await this.service.assessAnswer(this.selectionDoc(t), t.sel, question, answer);
+		const result = await this.service.assessAnswer(this.selectionDoc(t), t.sel, question, answer, { signal: abort.signal });
 		if (seq !== this.updateSeq) {
 			return;
 		}
@@ -520,6 +563,7 @@ export class ExplanationPanel {
 
 	dispose(): void {
 		ExplanationPanel.current = undefined;
+		this.currentAbort?.abort();
 		if (this.debounceTimer) {
 			clearTimeout(this.debounceTimer);
 		}

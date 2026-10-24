@@ -31,7 +31,10 @@ const RULES_FALLBACK = {
 
 interface CapturedRequest {
 	path: string;
-	body: { model?: string; system?: string; prompt?: string; stream?: boolean; think?: boolean };
+	body: {
+		model?: string; system?: string; prompt?: string; stream?: boolean;
+		think?: boolean; keep_alive?: string; options?: { num_predict?: number };
+	};
 }
 
 async function withServer(
@@ -81,6 +84,8 @@ test('e2e: POST /api/generate carries model, prompt and stream:false', async () 
 		assert.equal(captured[0].body.model, 'qwen3:8b');
 		assert.equal(captured[0].body.stream, false);
 		assert.equal(captured[0].body.think, false, 'thinking disabled for faster replies');
+		assert.equal(captured[0].body.keep_alive, '10m', 'model stays warm between requests');
+		assert.equal(captured[0].body.options?.num_predict, 200, 'summary caps output length');
 		assert.match(captured[0].body.prompt ?? '', /export function main/);
 		assert.equal(typeof captured[0].body.system, 'string');
 	});
@@ -168,6 +173,41 @@ test('e2e: slow response hits the configured timeout', async () => {
 		if (res.status === 'error') {
 			assert.equal(res.kind, 'timeout');
 		}
+	});
+});
+
+test('e2e: streamed NDJSON chunks accumulate and reach the panel', async () => {
+	await withServer((_req, res) => {
+		res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+		// Chunk boundaries deliberately mid-token — the client must reassemble.
+		res.write('{"response":"The file ","done":false}\n{"response":"registers ');
+		res.write('commands.","done":false}\n{"response":"","done":true}\n');
+		res.end();
+	}, async (baseUrl, captured) => {
+		const tokens: string[] = [];
+		const res = await makeService(baseUrl).explain(doc(), 'summary', false, { onToken: t => tokens.push(t) });
+		assert.equal(captured[0].body.stream, true, 'onToken switches the request to streaming');
+		if (res.status !== 'ok' || res.source !== 'model') {
+			return assert.fail('expected a model result');
+		}
+		assert.equal(res.text, 'The file registers commands.');
+		assert.deepEqual(tokens, ['The file ', 'The file registers commands.']);
+	});
+});
+
+test('e2e: thinking chunks in a stream never reach the visible answer', async () => {
+	await withServer((_req, res) => {
+		res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+		res.write('{"thinking":"pondering quietly","done":false}\n');
+		res.end('{"response":"Visible answer.","done":true}\n');
+	}, async baseUrl => {
+		const tokens: string[] = [];
+		const res = await makeService(baseUrl).explain(doc(), 'summary', false, { onToken: t => tokens.push(t) });
+		if (res.status !== 'ok' || res.source !== 'model') {
+			return assert.fail('expected a model result');
+		}
+		assert.equal(res.text, 'Visible answer.');
+		assert.ok(!tokens.some(t => t.includes('pondering')), 'thinking field must not leak into tokens');
 	});
 });
 

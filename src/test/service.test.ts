@@ -3,6 +3,7 @@ import test from 'node:test';
 import { ExplanationCache } from '../model/cache';
 import { OllamaClient, OllamaError } from '../model/ollama';
 import { DocLike, ExplanationResult, ExplanationService } from '../model/service';
+import type { GenerateOptions } from '../model/ollama';
 
 function doc(overrides: Partial<DocLike> = {}): DocLike {
 	return {
@@ -15,14 +16,20 @@ function doc(overrides: Partial<DocLike> = {}): DocLike {
 	};
 }
 
-function makeService(generate: (model: string, sys: string, prompt: string) => Promise<string>, fallbackToRules = true) {
+function makeService(
+	generate: (model: string, sys: string, prompt: string, opts?: GenerateOptions) => Promise<string>,
+	fallbackToRules = true,
+) {
 	const calls: string[] = [];
+	const genOpts: (GenerateOptions | undefined)[] = [];
+	const logs: string[] = [];
 	const client = new OllamaClient('http://127.0.0.1:11434', 5000, async () => {
 		throw new Error('not implemented');
 	});
-	client.generate = async (model, sys, prompt) => {
+	client.generate = async (model, sys, prompt, opts) => {
 		calls.push(prompt);
-		return generate(model, sys, prompt);
+		genOpts.push(opts);
+		return generate(model, sys, prompt, opts);
 	};
 	const service = new ExplanationService(
 		client,
@@ -30,8 +37,9 @@ function makeService(generate: (model: string, sys: string, prompt: string) => P
 		d => (d.getText().includes('export') ? ({ summary: 'rules say it exports things', symbols: [], imports: [], exports: [], details: [], fileName: 'app.ts', languageId: 'typescript', languageName: 'TypeScript', lineCount: 1, nonBlankLineCount: 1 }) : undefined),
 		() => true,
 		{ model: 'm1', maxSourceBytes: 1024, fallbackToRules },
+		{ info: m => logs.push(m) },
 	);
-	return { service, calls };
+	return { service, calls, genOpts, logs };
 }
 
 test('returns model text for a supported non-empty file', async () => {
@@ -198,4 +206,57 @@ test('unsupported, empty, and oversized docs short-circuit before inference', as
 		assert.equal(tooLarge.limit, 1024);
 	}
 	assert.equal(calls.length, 0);
+});
+
+test('per-mode num_predict limits keep routine answers short', async () => {
+	const { service, genOpts } = makeService(async () => 'ok');
+	const sel2 = { startLine: 1, endLine: 1, text: 'const a = 1;', before: undefined, after: undefined };
+	await service.explain(doc(), 'summary');
+	assert.equal(genOpts[0]?.numPredict, 200);
+	await service.explain(doc(), 'detail');
+	assert.equal(genOpts[1]?.numPredict, 500);
+	await service.explainSelection(doc(), sel2, 'explain');
+	assert.equal(genOpts[2]?.numPredict, 300);
+	await service.explainSelection(doc(), sel2, 'learn');
+	assert.equal(genOpts[3]?.numPredict, 500);
+	await service.generateQuestion(doc(), sel2);
+	assert.equal(genOpts[4]?.numPredict, 180);
+	await service.assessAnswer(doc(), sel2, 'q?', 'a');
+	assert.equal(genOpts[5]?.numPredict, 500);
+	for (const o of genOpts) {
+		assert.equal(o?.keepAlive, '10m', 'model kept warm on every request');
+	}
+});
+
+test('onToken streams into the model call and logs time to first byte', async () => {
+	const { service, logs } = makeService(async (_m, _s, _p, opts) => {
+		opts?.onToken?.('partial ');
+		opts?.onToken?.('partial text');
+		return 'partial text';
+	});
+	const tokens: string[] = [];
+	const res = await service.explain(doc(), 'summary', false, { onToken: t => tokens.push(t) });
+	assert.deepEqual(tokens, ['partial ', 'partial text']);
+	assert.equal(res.status, 'ok');
+	assert.ok(logs.some(l => l.includes('explain first token')), 'time-to-first-token is logged');
+});
+
+test('cache hits and in-flight dedupe are logged for performance diagnostics', async () => {
+	const { service, calls, logs } = makeService(async () => 'cached');
+	await service.explain(doc(), 'summary');
+	await service.explain(doc(), 'summary');
+	assert.equal(calls.length, 1);
+	assert.ok(logs.some(l => l.includes('explain cache hit')), 'cache hit is logged');
+	assert.ok(logs.some(l => l.includes('num_predict=200')), 'output cap is logged per request');
+});
+
+test('a cancelled request surfaces as an error result, not a crash', async () => {
+	const { service } = makeService(async () => {
+		throw new OllamaError('cancelled', 'Request was cancelled by a newer update.');
+	});
+	const res = await service.explain(doc(), 'summary');
+	assert.equal(res.status, 'error');
+	if (res.status === 'error') {
+		assert.equal(res.kind, 'cancelled');
+	}
 });
