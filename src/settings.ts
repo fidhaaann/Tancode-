@@ -14,7 +14,7 @@ export function getSettings(): TancodeSettings {
 		ollamaBaseUrl: cfg.get<string>('ollama.baseUrl', 'http://127.0.0.1:11434'),
 		ollamaModel: cfg.get<string>('ollama.model', 'qwen3:8b'),
 		maxSourceBytes: cfg.get<number>('maxSourceBytes', 65536),
-		requestTimeoutMs: cfg.get<number>('requestTimeoutMs', 30000),
+		requestTimeoutMs: cfg.get<number>('requestTimeoutMs', 120000),
 		fallbackToRules: cfg.get<boolean>('fallbackToRuleBased', true),
 	};
 }

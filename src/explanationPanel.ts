@@ -35,6 +35,7 @@ export class ExplanationPanel {
 	private mode: ExplainMode = 'summary';
 	private debounceTimer: NodeJS.Timeout | undefined;
 	private lastDoc: { uri: string; version: number } | undefined;
+	private updateSeq = 0;
 
 	static createOrShow(context: vscode.ExtensionContext): void {
 		if (ExplanationPanel.current) {
@@ -153,9 +154,12 @@ export class ExplanationPanel {
 			this.render({ kind: 'loading', fileName, languageName, model: this.settings.ollamaModel, mode: this.mode });
 		}
 
-		// Guard against stale results landing after another editor switch.
+		// Guard against stale results landing after a newer update started
+		// (another editor switch, an edit, or a mode/force change on the same
+		// file). Any later update() entry bumps updateSeq, invalidating this one.
+		const seq = ++this.updateSeq;
 		const result = await this.service.explain(document, this.mode, force);
-		if (this.lastDoc?.uri !== document.uri.toString()) {
+		if (seq !== this.updateSeq || this.lastDoc?.uri !== document.uri.toString()) {
 			return;
 		}
 
