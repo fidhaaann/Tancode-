@@ -4,6 +4,8 @@ tsconfig.json
 
 # Development configuration
 .vscode/
+scripts/
+.npmrc
 .env
 .env.*
 !.env.example

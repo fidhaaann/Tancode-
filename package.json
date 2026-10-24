@@ -7,7 +7,8 @@
   "license": "MIT",
   "private": true,
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.90.0",
+    "node": ">=20.0.0"
   },
   "categories": [
     "Other",
@@ -20,10 +21,17 @@
       {
         "command": "tancode.helloWorld",
         "title": "Tancode: Hello World"
+      },
+      {
+        "command": "tancode.explainCurrentFile",
+        "title": "Tancode: Explain Current File"
       }
     ]
   },
   "scripts": {
+    "precompile": "node ./scripts/preflight.js",
+    "pretypecheck": "node ./scripts/preflight.js",
+    "prewatch": "node ./scripts/preflight.js",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "typecheck": "tsc -p ./ --noEmit",
