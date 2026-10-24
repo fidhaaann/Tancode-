@@ -31,7 +31,7 @@ const RULES_FALLBACK = {
 
 interface CapturedRequest {
 	path: string;
-	body: { model?: string; system?: string; prompt?: string; stream?: boolean };
+	body: { model?: string; system?: string; prompt?: string; stream?: boolean; think?: boolean };
 }
 
 async function withServer(
@@ -80,6 +80,7 @@ test('e2e: POST /api/generate carries model, prompt and stream:false', async () 
 		assert.equal(captured[0].path, '/api/generate');
 		assert.equal(captured[0].body.model, 'qwen3:8b');
 		assert.equal(captured[0].body.stream, false);
+		assert.equal(captured[0].body.think, false, 'thinking disabled for faster replies');
 		assert.match(captured[0].body.prompt ?? '', /export function main/);
 		assert.equal(typeof captured[0].body.system, 'string');
 	});

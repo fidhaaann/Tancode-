@@ -88,6 +88,9 @@ export class ExplanationPanel {
 				}
 			}),
 			this.panel.webview.onDidReceiveMessage(message => {
+				// Log every click that reaches the extension — distinguishes a
+				// dead webview script/stale build from a dispatch problem.
+				getLogger().info(`webview message: type=${String(message?.type)}`);
 				if (message?.type === 'detail') {
 					this.mode = 'detail';
 					this.scheduleUpdate(0);
