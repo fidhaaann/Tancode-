@@ -5,6 +5,7 @@ import { OllamaClient } from './model/ollama';
 import { ExplainMode } from './model/prompt';
 import { ExplanationResult, ExplanationService } from './model/service';
 import { getSettings, TancodeSettings } from './settings';
+import { getLogger } from './log';
 import { renderDocument, ViewState } from './view';
 
 const PANEL_VIEW_TYPE = 'tancode.explanation';
@@ -100,7 +101,8 @@ export class ExplanationPanel {
 				model: this.settings.ollamaModel,
 				maxSourceBytes: this.settings.maxSourceBytes,
 				fallbackToRules: this.settings.fallbackToRules,
-			}
+			},
+			getLogger(),
 		);
 	}
 

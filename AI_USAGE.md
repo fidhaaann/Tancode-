@@ -6,6 +6,7 @@ Use Codex during the hackathon and briefly document its actual contribution here
 
 | Date and time with timezone | Tool / model, if known | Task | Assistance and affected files | Human review / corrections | Validation and result |
 | --- | --- | --- | --- | --- | --- |
+| 2026-10-24T22:50:00+05:30 | Devin (Cognition AI) | Ollama diagnostics + source labeling | Added `src/log.ts`, source badges in `src/view.ts`, service logging, 4 new tests | Pending | `npm ci`, `compile`, `typecheck`, `npm test` — 29/29 pass; no live model available |
 | 2026-10-24T22:20:00+05:30 | Devin (Cognition AI) | Milestone 2 local LLM integration | Added `src/model/*`, `src/settings.ts`, `src/view.ts`, `src/test/*`; reworked `src/explanationPanel.ts`; `package.json` settings + test script; README | Pending | `npm ci`, `compile`, `typecheck`, `npm test` — 25/25 tests pass with mocked Ollama; no real-model or F5 test run |
 | 2026-10-24T21:30:00+05:30 | Devin (Cognition AI) | Apply hackathon template docs | Added `RULES.md`, `AGENTS.md`, `SUBMISSION.md`, PR template, `CHANGELOG.md`, this file; `.gitignore` merge | Pending | Markdown-only; file list checked |
 | 2026-10-24T20:45:00+05:30 | Devin (Cognition AI) | Milestone 1 explanation panel | Wrote `src/analysis.ts`, `src/explanationPanel.ts`, command registration, `package.json` contribution, README usage | Pending | `npm ci`, `compile`, `typecheck` pass; analyzer smoke test on TS/Python passes; F5 not run |

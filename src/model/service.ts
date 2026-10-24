@@ -42,6 +42,12 @@ export function hintFor(kind: OllamaErrorKind, model: string, baseUrl: string): 
 	}
 }
 
+// Optional logger — receives operational metadata only (URIs never logged,
+// only file names; never source text or prompts).
+export interface ServiceLogger {
+	info(message: string): void;
+}
+
 export class ExplanationService {
 	private readonly inflight = new Map<string, Promise<ExplanationResult>>();
 
@@ -51,6 +57,7 @@ export class ExplanationService {
 		private readonly rulesExplain: (doc: DocLike) => FileExplanation | undefined,
 		private readonly isSupportedLang: (languageId: string) => boolean,
 		private readonly options: ServiceOptions,
+		private readonly logger?: ServiceLogger,
 	) {}
 
 	async explain(doc: DocLike, mode: ExplainMode, force = false): Promise<ExplanationResult> {
@@ -93,18 +100,22 @@ export class ExplanationService {
 		);
 
 		let result: ExplanationResult;
+		this.logger?.info(`explain request: file=${doc.fileName.split(/[\\/]/).pop()} mode=${mode} model=${this.options.model} bytes=${doc.getText().length}`);
 		try {
 			const raw = await this.client.generate(this.options.model, system, prompt);
 			const text = parseResponse(raw);
 			if (text.length === 0) {
 				result = this.errorResult(doc, 'malformed', 'The model returned an empty explanation.');
 			} else {
+				this.logger?.info(`explain success: model=${this.options.model} mode=${mode} chars=${text.length}`);
 				result = { status: 'ok', source: 'model', text, fromCache: false };
 			}
 		} catch (err) {
 			if (err instanceof OllamaError) {
+				this.logger?.info(`explain failed: kind=${err.kind} message=${err.message}`);
 				result = this.errorResult(doc, err.kind, err.message);
 			} else {
+				this.logger?.info(`explain failed: kind=unavailable message=${(err as Error)?.message ?? String(err)}`);
 				result = this.errorResult(doc, 'unavailable', `Unexpected error: ${(err as Error)?.message ?? String(err)}`);
 			}
 		}
@@ -116,12 +127,14 @@ export class ExplanationService {
 	}
 
 	private errorResult(doc: DocLike, kind: OllamaErrorKind, message: string): ExplanationResult {
+		const fallback = this.options.fallbackToRules ? this.rulesExplain(doc) : undefined;
+		this.logger?.info(`explain outcome: error kind=${kind} fallback=${fallback ? 'rule-based' : 'none'}`);
 		return {
 			status: 'error',
 			kind,
 			message,
 			hint: hintFor(kind, this.options.model, this.client.baseUrl),
-			fallback: this.options.fallbackToRules ? this.rulesExplain(doc) : undefined,
+			fallback,
 		};
 	}
 }

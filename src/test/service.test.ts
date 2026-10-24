@@ -87,6 +87,41 @@ test('fallback is omitted when disabled', async () => {
 	}
 });
 
+test('invalid model produces modelMissing with pull instructions', async () => {
+	const { service } = makeService(async () => { throw new OllamaError('modelMissing', 'Model "m1" is not available in Ollama.'); });
+	const res = await service.explain(doc(), 'summary');
+	assert.equal(res.status, 'error');
+	if (res.status === 'error') {
+		assert.equal(res.kind, 'modelMissing');
+		assert.match(res.hint, /ollama pull m1/);
+	}
+});
+
+test('timeout produces a timeout hint', async () => {
+	const { service } = makeService(async () => { throw new OllamaError('timeout', 'Request timed out'); });
+	const res = await service.explain(doc(), 'summary');
+	assert.equal(res.status, 'error');
+	if (res.status === 'error') {
+		assert.equal(res.kind, 'timeout');
+		assert.match(res.hint, /requestTimeoutMs/);
+	}
+});
+
+test('service logs request outcome without logging file contents', async () => {
+	const lines: string[] = [];
+	const { service } = makeService(async () => 'ok text');
+	// reach into constructor via a second service with logger
+	const client = new OllamaClient('http://x', 1, async () => { throw new Error('n/a'); });
+	client.generate = async () => 'ok text';
+	const svc = new ExplanationService(client, new ExplanationCache<ExplanationResult>(), () => undefined, () => true,
+		{ model: 'm1', maxSourceBytes: 1024, fallbackToRules: true }, { info: m => lines.push(m) });
+	await svc.explain(doc(), 'summary');
+	assert.match(lines.join('\n'), /explain request: file=app.ts/);
+	assert.match(lines.join('\n'), /explain success: model=m1/);
+	assert.ok(!lines.join('\n').includes('export function main'), 'log must not contain source code');
+	void service;
+});
+
 test('empty model response is a malformed error, not a crash', async () => {
 	const { service } = makeService(async () => '<think>hmm</think>');
 	const res = await service.explain(doc(), 'summary');
