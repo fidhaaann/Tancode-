@@ -4,13 +4,20 @@ import { OllamaClient, OllamaError, OllamaErrorKind } from './ollama';
 import type { GenerateOptions } from './ollama';
 import {
 	buildAssessmentPrompt,
+	buildChatPrompt,
+	buildDiagnosticPrompt,
+	buildInsightPrompt,
+	buildOrientationPrompt,
 	buildPrompt,
 	buildQuestionPrompt,
 	buildSelectionPrompt,
+	buildWrapupPrompt,
 	CodeSelection,
+	DiagnosticContext,
 	ExplainMode,
 	parseResponse,
 	SelectionMode,
+	SessionRecapData,
 } from './prompt';
 
 // Minimal document shape — satisfied by vscode.TextDocument, but keeping
@@ -27,6 +34,10 @@ export interface ServiceOptions {
 	model: string;
 	maxSourceBytes: number;
 	fallbackToRules: boolean;
+	/** detailed → ~1.5x output budgets; concise → the base caps. */
+	depth?: 'concise' | 'detailed';
+	/** include plain-language explanations + analogies in teaching modes. */
+	simplified?: boolean;
 }
 
 export type ExplanationResult =
@@ -64,6 +75,11 @@ const NUM_PREDICT: Record<string, number> = {
 	'sel-learn': 500,
 	question: 180,
 	assess: 500,
+	chat: 300,
+	insight: 150,
+	diagnostic: 400,
+	orientation: 350,
+	recap: 600,
 };
 
 // Optional streaming/cancellation channel from the panel. `signal` aborts
@@ -96,6 +112,17 @@ export class ExplanationService {
 		private readonly logger?: ServiceLogger,
 	) {}
 
+	// Detailed depth gives the model ~50% more output room; concise stays at
+	// the latency-tuned caps.
+	private capFor(mode: string): number {
+		const base = NUM_PREDICT[mode] ?? 300;
+		return this.options.depth === 'detailed' ? Math.round(base * 1.5) : base;
+	}
+
+	private get simplified(): boolean {
+		return this.options.simplified !== false;
+	}
+
 	async explain(doc: DocLike, mode: ExplainMode, force = false, ui?: RequestUi): Promise<ExplanationResult> {
 		const preflight = this.preflight(doc.getText(), doc);
 		if (preflight) {
@@ -122,8 +149,9 @@ export class ExplanationService {
 		const parts = buildPrompt(
 			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
 			mode,
+			this.simplified,
 		);
-		const work = this.runInference(parts, tag, key, doc, NUM_PREDICT[mode], ui)
+		const work = this.runInference(parts, tag, key, doc, this.capFor(mode), ui)
 			.finally(() => {
 				this.inflight.delete(key);
 			});
@@ -170,8 +198,9 @@ export class ExplanationService {
 			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
 			sel,
 			mode,
+			this.simplified,
 		);
-		const work = this.runInference(parts, tag, key, selDoc, NUM_PREDICT[`sel-${mode}`], ui)
+		const work = this.runInference(parts, tag, key, selDoc, this.capFor(`sel-${mode}`), ui)
 			.finally(() => {
 				this.inflight.delete(key);
 			});
@@ -189,7 +218,60 @@ export class ExplanationService {
 			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
 			sel,
 		);
-		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=question lines=${sel.startLine}-${sel.endLine} bytes=${sel.text.length}`, undefined, selDoc, NUM_PREDICT.question, ui);
+		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=question lines=${sel.startLine}-${sel.endLine} bytes=${sel.text.length}`, undefined, selDoc, this.capFor('question'), ui);
+	}
+
+	// Explains a real editor diagnostic — dedupe/cache via the caller's key
+	// (diag line+code hash); same doc mutation happens at the same location.
+	async explainDiagnostic(
+		doc: DocLike,
+		sel: CodeSelection,
+		diag: DiagnosticContext,
+		cacheKey: string,
+		ui?: RequestUi,
+	): Promise<ExplanationResult> {
+		const selDoc: DocLike = { ...doc, getText: () => sel.text };
+		const tag = `file=${baseName(doc.fileName)} mode=diagnostic line=${diag.line}`;
+		const hit = this.cache.get(cacheKey);
+		if (hit) {
+			this.logger?.info(`explain cache hit: ${tag}`);
+			return hit.status === 'ok' && hit.source === 'model' ? { ...hit, fromCache: true } : hit;
+		}
+		const parts = buildDiagnosticPrompt(
+			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
+			sel, diag, this.simplified,
+		);
+		return this.runInference(parts, tag, cacheKey, selDoc, this.capFor('diagnostic'), ui);
+	}
+
+	// Proactive scan of a saved file: returns the model's insight text or the
+	// literal 'NONE' — the panel treats NONE as "stay quiet". Cached per
+	// content so identical saves don't re-run inference.
+	async findInsight(doc: DocLike, contentHash: string, ui?: RequestUi): Promise<ExplanationResult> {
+		const tag = `file=${baseName(doc.fileName)} mode=insight bytes=${doc.getText().length}`;
+		const key = ExplanationCache.key(doc.uri.toString(), 0, this.options.model, `insight:${contentHash}`);
+		const hit = this.cache.get(key);
+		if (hit) {
+			this.logger?.info(`explain cache hit: ${tag}`);
+			return hit.status === 'ok' && hit.source === 'model' ? { ...hit, fromCache: true } : hit;
+		}
+		const parts = buildInsightPrompt({ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() });
+		return this.runInference(parts, tag, key, doc, this.capFor('insight'), ui);
+	}
+
+	// Conversational answers are never cached — they depend on live history.
+	async chatAnswer(
+		doc: DocLike,
+		sel: CodeSelection | undefined,
+		question: string,
+		history: Array<{ role: 'user' | 'assistant'; text: string }>,
+		ui?: RequestUi,
+	): Promise<ExplanationResult> {
+		const parts = buildChatPrompt(
+			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
+			sel, question, history,
+		);
+		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=chat bytes=${question.length}`, undefined, doc, this.capFor('chat'), ui);
 	}
 
 	async assessAnswer(
@@ -206,7 +288,7 @@ export class ExplanationService {
 			question,
 			answer,
 		);
-		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=assess lines=${sel.startLine}-${sel.endLine} bytes=${sel.text.length}`, undefined, selDoc, NUM_PREDICT.assess, ui);
+		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=assess lines=${sel.startLine}-${sel.endLine} bytes=${sel.text.length}`, undefined, selDoc, this.capFor('assess'), ui);
 	}
 
 	private preflight(text: string, doc: DocLike, payloadBytes?: number): ExplanationResult | undefined {
@@ -273,6 +355,35 @@ export class ExplanationService {
 			this.cache.set(key, result);
 		}
 		return result;
+	}
+
+	// One-shot project orientation from deterministic facts collected by
+	// src/project.ts. Cached by caller's facts hash — the same project state
+	// never re-runs inference.
+	async projectOrientation(factsText: string, cacheKey: string, ui?: RequestUi): Promise<ExplanationResult> {
+		const hit = this.cache.get(cacheKey);
+		if (hit) {
+			this.logger?.info('explain cache hit: mode=orientation');
+			return hit.status === 'ok' && hit.source === 'model' ? { ...hit, fromCache: true } : hit;
+		}
+		const parts = buildOrientationPrompt(factsText);
+		const emptyDoc: DocLike = {
+			languageId: 'plaintext', fileName: 'project', version: 0,
+			uri: { fsPath: '', toString: () => 'project://' },
+			getText: () => '',
+		};
+		return this.runInference(parts, 'mode=orientation', cacheKey, emptyDoc, this.capFor('orientation'), ui);
+	}
+
+	// Session wrap-up: never cached — the recap reflects this exact session.
+	async sessionRecap(data: SessionRecapData, ui?: RequestUi): Promise<ExplanationResult> {
+		const parts = buildWrapupPrompt(data);
+		const emptyDoc: DocLike = {
+			languageId: 'plaintext', fileName: 'project', version: 0,
+			uri: { fsPath: '', toString: () => 'project://' },
+			getText: () => '',
+		};
+		return this.runInference(parts, 'mode=recap', undefined, emptyDoc, this.capFor('recap'), ui);
 	}
 
 	private errorResult(doc: DocLike, kind: OllamaErrorKind, message: string): ExplanationResult {

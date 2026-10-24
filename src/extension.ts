@@ -19,7 +19,11 @@ export function activate(context: vscode.ExtensionContext) {
 		ExplanationPanel.explainSelection(context, editor);
 	});
 
-	context.subscriptions.push(helloWorld, explainCurrentFile, explainSelectedCode);
+	const clearConversation = vscode.commands.registerCommand('tancode.clearConversation', () => {
+		ExplanationPanel.clearChat();
+	});
+
+	context.subscriptions.push(helloWorld, explainCurrentFile, explainSelectedCode, clearConversation);
 }
 
 export function deactivate() {}

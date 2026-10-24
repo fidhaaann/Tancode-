@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ExplanationCache } from '../model/cache';
 import { OllamaClient, OllamaError } from '../model/ollama';
-import { DocLike, ExplanationResult, ExplanationService } from '../model/service';
+import { DocLike, ExplanationResult, ExplanationService, ServiceOptions } from '../model/service';
 import type { GenerateOptions } from '../model/ollama';
 
 function doc(overrides: Partial<DocLike> = {}): DocLike {
@@ -18,8 +18,9 @@ function doc(overrides: Partial<DocLike> = {}): DocLike {
 
 function makeService(
 	generate: (model: string, sys: string, prompt: string, opts?: GenerateOptions) => Promise<string>,
-	fallbackToRules = true,
+	extra: Partial<ServiceOptions> | boolean = true,
 ) {
+	const fallbackToRules = typeof extra === 'boolean' ? extra : extra.fallbackToRules !== false;
 	const calls: string[] = [];
 	const genOpts: (GenerateOptions | undefined)[] = [];
 	const logs: string[] = [];
@@ -36,7 +37,7 @@ function makeService(
 		new ExplanationCache<ExplanationResult>(),
 		d => (d.getText().includes('export') ? ({ summary: 'rules say it exports things', symbols: [], imports: [], exports: [], details: [], fileName: 'app.ts', languageId: 'typescript', languageName: 'TypeScript', lineCount: 1, nonBlankLineCount: 1 }) : undefined),
 		() => true,
-		{ model: 'm1', maxSourceBytes: 1024, fallbackToRules },
+		{ model: 'm1', maxSourceBytes: 1024, fallbackToRules, ...(typeof extra === 'object' ? extra : {}) },
 		{ info: m => logs.push(m) },
 	);
 	return { service, calls, genOpts, logs };
@@ -259,4 +260,58 @@ test('a cancelled request surfaces as an error result, not a crash', async () =>
 	if (res.status === 'error') {
 		assert.equal(res.kind, 'cancelled');
 	}
+});
+
+test('findInsight returns model text and caches by content hash', async () => {
+	const { service, calls } = makeService(async () => 'The loop rebuilds the index every save.');
+	const res = await service.findInsight(doc(), 'h1');
+	assert.equal(res.status, 'ok');
+	await service.findInsight(doc(), 'h1');
+	assert.equal(calls.length, 1, 'same content hash hits cache');
+	await service.findInsight(doc(), 'h2');
+	assert.equal(calls.length, 2, 'new content re-asks');
+});
+
+test('chatAnswer sends question + history, never caches', async () => {
+	const { service, calls, genOpts } = makeService(async () => 'It maps inputs.');
+	const sel = { startLine: 1, endLine: 1, text: 'x' };
+	await service.chatAnswer(doc(), sel, 'what does this do', [{ role: 'user', text: 'earlier' }]);
+	assert.match(calls[0], /<user_question>\nwhat does this do/);
+	assert.match(calls[0], /<history>/);
+	assert.equal(genOpts[0]?.numPredict, 300);
+	await service.chatAnswer(doc(), sel, 'what does this do', []);
+	assert.equal(calls.length, 2, 'chat is never cached');
+});
+
+test('explainDiagnostic caches by diag key and carries num_predict=400', async () => {
+	const { service, calls, genOpts } = makeService(async () => 'The error means x may be undefined.');
+	const sel = { startLine: 1, endLine: 1, text: 'x.y' };
+	const diag = { message: 'possibly undefined', severity: 'error' as const, line: 1 };
+	await service.explainDiagnostic(doc(), sel, diag, 'diag:k1');
+	await service.explainDiagnostic(doc(), sel, diag, 'diag:k1');
+	assert.equal(calls.length, 1);
+	assert.equal(genOpts[0]?.numPredict, 400);
+});
+
+test('projectOrientation caches by facts hash and caps output', async () => {
+	const { service, calls, genOpts } = makeService(async () => 'Looks like a TypeScript web app.');
+	await service.projectOrientation('facts-v1', 'orient:k1');
+	await service.projectOrientation('facts-v1', 'orient:k1');
+	assert.equal(calls.length, 1);
+	assert.match(calls[0], /<project_facts>\nfacts-v1/);
+	assert.equal(genOpts[0]?.numPredict, 350);
+});
+
+test('sessionRecap is never cached', async () => {
+	const { service, calls } = makeService(async () => 'You built a form handler.');
+	const data = { projectFacts: 'x', touchedFiles: ['a.ts'], history: [] };
+	await service.sessionRecap(data);
+	await service.sessionRecap(data);
+	assert.equal(calls.length, 2);
+});
+
+test('detailed depth scales output budgets ~1.5x', async () => {
+	const { service, genOpts } = makeService(async () => 'x', { depth: 'detailed' }); // eslint-disable-line
+	await service.explain(doc(), 'summary');
+	assert.equal(genOpts[0]?.numPredict, 300, 'summary 200 * 1.5');
 });

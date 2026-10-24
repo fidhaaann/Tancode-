@@ -1,4 +1,8 @@
 import * as vscode from 'vscode';
+import type { MentoringFrequency } from './proactive';
+
+export type ProactiveLevel = 'all' | 'errors-only';
+export type ExplanationDepth = 'concise' | 'detailed';
 
 export interface TancodeSettings {
 	ollamaBaseUrl: string;
@@ -6,6 +10,14 @@ export interface TancodeSettings {
 	maxSourceBytes: number;
 	requestTimeoutMs: number;
 	fallbackToRules: boolean;
+	proactiveEnabled: boolean;
+	proactiveLevel: ProactiveLevel;
+	proactiveFrequency: MentoringFrequency;
+	proactiveCooldownSeconds: number;
+	proactiveMaxPerSession: number;
+	explanationDepth: ExplanationDepth;
+	simplifiedExplanations: boolean;
+	interactiveQuestions: boolean;
 }
 
 export function getSettings(): TancodeSettings {
@@ -16,5 +28,13 @@ export function getSettings(): TancodeSettings {
 		maxSourceBytes: cfg.get<number>('maxSourceBytes', 65536),
 		requestTimeoutMs: cfg.get<number>('requestTimeoutMs', 120000),
 		fallbackToRules: cfg.get<boolean>('fallbackToRuleBased', true),
+		proactiveEnabled: cfg.get<boolean>('proactive.enabled', true),
+		proactiveLevel: cfg.get<ProactiveLevel>('proactive.level', 'all'),
+		proactiveFrequency: cfg.get<MentoringFrequency>('proactive.frequency', 'balanced'),
+		proactiveCooldownSeconds: cfg.get<number>('proactive.cooldownSeconds', 90),
+		proactiveMaxPerSession: cfg.get<number>('proactive.maxPerSession', 12),
+		explanationDepth: cfg.get<ExplanationDepth>('explanation.depth', 'concise'),
+		simplifiedExplanations: cfg.get<boolean>('explanation.simplified', true),
+		interactiveQuestions: cfg.get<boolean>('explanation.interactiveQuestions', true),
 	};
 }

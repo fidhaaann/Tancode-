@@ -11,7 +11,13 @@ export type WebviewMessageType =
 	| 'practice'
 	| 'new-question'
 	| 'submit-answer'
-	| 'file';
+	| 'file'
+	| 'chat'
+	| 'stop'
+	| 'pause'
+	| 'resume'
+	| 'dismiss'
+	| 'clear';
 
 export interface WebviewActions {
 	detail(): void;
@@ -23,11 +29,18 @@ export interface WebviewActions {
 	newQuestion(): void;
 	submitAnswer(text: string): void;
 	backToFile(): void;
+	chat(text: string): void;
+	stop(): void;
+	pause(): void;
+	resume(): void;
+	dismiss(id: number): void;
+	clear(): void;
 }
 
 export const WEBVIEW_MESSAGE_TYPES: readonly WebviewMessageType[] = [
 	'detail', 'summary', 'retry', 'explain', 'learn', 'practice',
 	'new-question', 'submit-answer', 'file',
+	'chat', 'stop', 'pause', 'resume', 'dismiss', 'clear',
 ];
 
 // Returns true when the message was recognized and dispatched. Anything
@@ -72,6 +85,34 @@ export function dispatchWebviewMessage(message: unknown, actions: WebviewActions
 		case 'file':
 			actions.backToFile();
 			return true;
+		case 'chat': {
+			const text = (message as { text?: unknown }).text;
+			if (typeof text !== 'string') {
+				return false;
+			}
+			actions.chat(text);
+			return true;
+		}
+		case 'stop':
+			actions.stop();
+			return true;
+		case 'pause':
+			actions.pause();
+			return true;
+		case 'resume':
+			actions.resume();
+			return true;
+		case 'clear':
+			actions.clear();
+			return true;
+		case 'dismiss': {
+			const id = (message as { id?: unknown }).id;
+			if (typeof id !== 'number') {
+				return false;
+			}
+			actions.dismiss(id);
+			return true;
+		}
 		default:
 			return false;
 	}

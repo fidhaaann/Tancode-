@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
 	buildAssessmentPrompt,
+	buildChatPrompt,
+	buildDiagnosticPrompt,
+	buildInsightPrompt,
+	buildOrientationPrompt,
 	buildPrompt,
+	buildWrapupPrompt,
 	buildQuestionPrompt,
 	buildSelectionPrompt,
 	parseResponse,
@@ -95,4 +100,70 @@ test('parseSections splits markdown headings and drops empty ones', () => {
 test('parseSections returns undefined for unstructured output', () => {
 	assert.equal(parseSections('just a paragraph\nand another'), undefined);
 	assert.equal(parseSections('## Only one\nwith a body'), undefined);
+});
+
+test('diagnostic prompt marks the diagnostic confirmed and causes inferred', () => {
+	const parts = buildDiagnosticPrompt(
+		{ fileName: 'a.ts', languageId: 'typescript', text: 'x.y' },
+		{ startLine: 1, endLine: 1, text: 'x.y' },
+		{ message: 'Object is possibly undefined', severity: 'error', line: 1, code: 'TS2532' },
+	);
+	assert.match(parts.prompt, /confirmed error at line 1/);
+	assert.match(parts.prompt, /<diagnostic>\n\[TS2532\] Object is possibly undefined/);
+	assert.match(parts.prompt, /inference|likely/i);
+	assert.match(parts.prompt, /follow-up question/i);
+});
+
+test('insight prompt asks for one grounded insight or NONE', () => {
+	const parts = buildInsightPrompt({ fileName: 'a.ts', languageId: 'typescript', text: 'code' });
+	assert.match(parts.prompt, /ONE concise insight/);
+	assert.match(parts.prompt, /reply with exactly: NONE/);
+	assert.match(parts.prompt, /<file>\ncode\n<\/file>/);
+});
+
+test('chat prompt bounds history and marks user question untrusted', () => {
+	const parts = buildChatPrompt(
+		{ fileName: 'a.ts', languageId: 'typescript', text: 'file body' },
+		{ startLine: 1, endLine: 2, text: 'x' },
+		'what does x do?',
+		[{ role: 'user', text: 'hi' }, { role: 'assistant', text: 'hello' }],
+	);
+	assert.match(parts.prompt, /<history>\nUser: hi\nTancode: hello\n<\/history>/);
+	assert.match(parts.prompt, /<user_question>\nwhat does x do\?\n<\/user_question>/);
+	assert.match(parts.prompt, /<selection/);
+	// without a selection, the file body is the context
+	const noSel = buildChatPrompt(
+		{ fileName: 'a.ts', languageId: 'typescript', text: 'file body' },
+		undefined, 'q', []);
+	assert.match(noSel.prompt, /<file>\nfile body\n<\/file>/);
+});
+
+test('orientation prompt is grounded only in observed facts', () => {
+	const parts = buildOrientationPrompt('Project name: demo\nLanguages seen: typescript (5)');
+	assert.match(parts.prompt, /facts that were\s*actually observed|actually observed on disk/);
+	assert.match(parts.prompt, /<project_facts>\nProject name: demo/);
+	assert.match(parts.prompt, /Do not invent files, behavior, or structure/);
+});
+
+test('wrapup prompt carries session evidence and explain-back questions', () => {
+	const parts = buildWrapupPrompt({
+		projectFacts: 'Project name: demo',
+		touchedFiles: ['a.ts', 'b.ts'],
+		history: [{ role: 'user', text: 'why a promise?' }],
+	});
+	assert.match(parts.prompt, /<touched_files>\na\.ts\nb\.ts/);
+	assert.match(parts.prompt, /<session_conversation>/);
+	assert.match(parts.prompt, /Can you explain it back to me/);
+	assert.match(parts.prompt, /two optional questions/);
+	assert.match(parts.prompt, /Never claim they mastered/);
+});
+
+test('learn + diagnostic prompts include simplified-guidance only when enabled', () => {
+	const doc2 = { fileName: 'a.ts', languageId: 'typescript', text: 'x' };
+	const sel = { startLine: 1, endLine: 1, text: 'x' };
+	const diag = { message: 'm', severity: 'error' as const, line: 1 };
+	assert.match(buildSelectionPrompt(doc2, sel, 'learn', true).prompt, /In plain terms/);
+	assert.ok(!buildSelectionPrompt(doc2, sel, 'learn', false).prompt.includes('In plain terms'));
+	assert.match(buildDiagnosticPrompt(doc2, sel, diag, true).prompt, /plain-language/);
+	assert.ok(!buildDiagnosticPrompt(doc2, sel, diag, false).prompt.includes('plain-language'));
 });

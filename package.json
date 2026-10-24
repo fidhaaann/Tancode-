@@ -1,91 +1,151 @@
 {
-  "name": "tancode",
-  "displayName": "Tancode",
-  "description": "A lightweight, local-first coding companion that helps developers learn technical concepts while vibe coding and understand errors without relying on their coding agent for every explanation.",
-  "version": "0.0.1",
-  "publisher": "fidhaaann",
-  "license": "MIT",
-  "private": true,
-  "engines": {
-    "vscode": "^1.90.0",
-    "node": ">=20.0.0"
-  },
-  "categories": [
-    "Other",
-    "Education"
-  ],
-  "activationEvents": [],
-  "main": "./out/extension.js",
-  "contributes": {
-    "commands": [
-      {
-        "command": "tancode.helloWorld",
-        "title": "Tancode: Hello World"
-      },
-      {
-        "command": "tancode.explainCurrentFile",
-        "title": "Tancode: Explain Current File"
-      },
-      {
-        "command": "tancode.explainSelectedCode",
-        "title": "Tancode: Explain Selected Code"
-      }
-    ],
-    "menus": {
-      "editor/context": [
-        {
-          "command": "tancode.explainSelectedCode",
-          "when": "editorHasSelection",
-          "group": "tancode@1"
-        }
-      ]
-    },
-    "configuration": {
-      "title": "Tancode",
-      "properties": {
-        "tancode.ollama.baseUrl": {
-          "type": "string",
-          "default": "http://127.0.0.1:11434",
-          "description": "Base URL of the local Ollama server. Tancode never calls external AI services."
-        },
-        "tancode.ollama.model": {
-          "type": "string",
-          "default": "qwen3:8b",
-          "description": "Ollama model used for explanations. Must already be pulled — see `ollama list`."
-        },
-        "tancode.maxSourceBytes": {
-          "type": "number",
-          "default": 65536,
-          "minimum": 1024,
-          "description": "Files larger than this many bytes are not sent to the model."
-        },
-        "tancode.requestTimeoutMs": {
-          "type": "number",
-          "default": 120000,
-          "minimum": 1000,
-          "description": "Timeout for each Ollama request in milliseconds. Non-streamed generation must finish within this budget; local models on CPU often need 60s+."
-        },
-        "tancode.fallbackToRuleBased": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show the deterministic rule-based explanation (clearly labelled, not AI-generated) when the model is unavailable."
-        }
-      }
-    }
-  },
-  "scripts": {
-    "precompile": "node ./scripts/preflight.js",
-    "pretypecheck": "node ./scripts/preflight.js",
-    "prewatch": "node ./scripts/preflight.js",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "typecheck": "tsc -p ./ --noEmit",
-    "pretest": "npm run compile",
-    "test": "node --test \"out/test/*.test.js\""
-  },
-  "devDependencies": {
-    "@types/node": "^20.19.43",
-    "@types/vscode": "^1.90.0",
-    "typescript": "^5.9.3"
-  }
+	"name": "tancode",
+	"displayName": "Tancode",
+	"description": "A lightweight, local-first coding companion that helps developers learn technical concepts while vibe coding and understand errors without relying on their coding agent for every explanation.",
+	"version": "0.0.1",
+	"publisher": "fidhaaann",
+	"license": "MIT",
+	"private": true,
+	"engines": {
+		"vscode": "^1.90.0",
+		"node": ">=20.0.0"
+	},
+	"categories": [
+		"Other",
+		"Education"
+	],
+	"activationEvents": [],
+	"main": "./out/extension.js",
+	"contributes": {
+		"commands": [
+			{
+				"command": "tancode.helloWorld",
+				"title": "Tancode: Hello World"
+			},
+			{
+				"command": "tancode.explainCurrentFile",
+				"title": "Tancode: Explain Current File"
+			},
+			{
+				"command": "tancode.explainSelectedCode",
+				"title": "Tancode: Explain Selected Code"
+			},
+			{
+				"command": "tancode.clearConversation",
+				"title": "Tancode: Clear Conversation"
+			}
+		],
+		"menus": {
+			"editor/context": [
+				{
+					"command": "tancode.explainSelectedCode",
+					"when": "editorHasSelection",
+					"group": "tancode@1"
+				}
+			]
+		},
+		"configuration": {
+			"title": "Tancode",
+			"properties": {
+				"tancode.ollama.baseUrl": {
+					"type": "string",
+					"default": "http://127.0.0.1:11434",
+					"description": "Base URL of the local Ollama server. Tancode never calls external AI services."
+				},
+				"tancode.ollama.model": {
+					"type": "string",
+					"default": "qwen3:8b",
+					"description": "Ollama model used for explanations. Must already be pulled \u2014 see `ollama list`."
+				},
+				"tancode.maxSourceBytes": {
+					"type": "number",
+					"default": 65536,
+					"minimum": 1024,
+					"description": "Files larger than this many bytes are not sent to the model."
+				},
+				"tancode.requestTimeoutMs": {
+					"type": "number",
+					"default": 120000,
+					"minimum": 1000,
+					"description": "Timeout for each Ollama request in milliseconds. Non-streamed generation must finish within this budget; local models on CPU often need 60s+."
+				},
+				"tancode.fallbackToRuleBased": {
+					"type": "boolean",
+					"default": true,
+					"description": "Show the deterministic rule-based explanation (clearly labelled, not AI-generated) when the model is unavailable."
+				},
+				"tancode.proactive.enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "Let Tancode proactively explain errors and code insights. Pause/resume also available in the panel."
+				},
+				"tancode.proactive.level": {
+					"type": "string",
+					"enum": [
+						"all",
+						"errors-only"
+					],
+					"default": "all",
+					"description": "How chatty proactive assistance is: 'all' explains errors and code insights; 'errors-only' only explains editor errors and warnings."
+				},
+				"tancode.proactive.cooldownSeconds": {
+					"type": "number",
+					"default": 90,
+					"minimum": 5,
+					"description": "Minimum seconds between proactive assistant messages."
+				},
+				"tancode.proactive.maxPerSession": {
+					"type": "number",
+					"default": 12,
+					"minimum": 1,
+					"description": "Maximum unsolicited proactive messages per panel session."
+				},
+				"tancode.proactive.frequency": {
+					"type": "string",
+					"enum": [
+						"low",
+						"balanced",
+						"high",
+						"custom"
+					],
+					"default": "balanced",
+					"description": "How often Tancode may speak first. custom uses tancode.proactive.cooldownSeconds."
+				},
+				"tancode.explanation.depth": {
+					"type": "string",
+					"enum": [
+						"concise",
+						"detailed"
+					],
+					"default": "concise",
+					"description": "Default depth of explanations and the output budget per answer."
+				},
+				"tancode.explanation.simplified": {
+					"type": "boolean",
+					"default": true,
+					"description": "Include plain-language explanations and real-world analogies alongside technical detail."
+				},
+				"tancode.explanation.interactiveQuestions": {
+					"type": "boolean",
+					"default": true,
+					"description": "Allow Tancode to ask occasional knowledge-check questions."
+				}
+			}
+		}
+	},
+	"scripts": {
+		"precompile": "node ./scripts/preflight.js",
+		"pretypecheck": "node ./scripts/preflight.js",
+		"prewatch": "node ./scripts/preflight.js",
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"typecheck": "tsc -p ./ --noEmit",
+		"pretest": "npm run compile",
+		"test": "node --test \"out/test/*.test.js\""
+	},
+	"devDependencies": {
+		"@types/node": "^20.19.43",
+		"@types/vscode": "^1.90.0",
+		"typescript": "^5.9.3"
+	}
 }
