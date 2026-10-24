@@ -41,6 +41,10 @@ export function buildPrompt(doc: SourceDoc, mode: ExplainMode): { system: string
 // the explanation. Everything the model says is still untrusted text — the
 // caller escapes it before rendering.
 export function parseResponse(raw: string): string {
-	const withoutThink = raw.replace(/<think>[\s\S]*?<\/think>/gi, '');
-	return withoutThink.trim();
+	// Closed <think>…</think> blocks first, then a trailing unterminated
+	// <think> block (models sometimes hit the output limit mid-reasoning).
+	return raw
+		.replace(/<think>[\s\S]*?<\/think>/gi, '')
+		.replace(/<think>[\s\S]*$/gi, '')
+		.trim();
 }

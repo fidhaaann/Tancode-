@@ -100,22 +100,24 @@ export class ExplanationService {
 		);
 
 		let result: ExplanationResult;
-		this.logger?.info(`explain request: file=${doc.fileName.split(/[\\/]/).pop()} mode=${mode} model=${this.options.model} bytes=${doc.getText().length}`);
+		const startedAt = Date.now();
+		const elapsed = () => `${Date.now() - startedAt}ms`;
+		this.logger?.info(`explain request: file=${doc.fileName.split(/[\\/]/).pop()} mode=${mode} model=${this.options.model} endpoint=${this.client.baseUrl} bytes=${doc.getText().length}`);
 		try {
 			const raw = await this.client.generate(this.options.model, system, prompt);
 			const text = parseResponse(raw);
 			if (text.length === 0) {
-				result = this.errorResult(doc, 'malformed', 'The model returned an empty explanation.');
+				result = this.errorResult(doc, 'malformed', 'The model returned no explanation text (possibly reasoning-only output).');
 			} else {
-				this.logger?.info(`explain success: model=${this.options.model} mode=${mode} chars=${text.length}`);
+				this.logger?.info(`explain success: model=${this.options.model} mode=${mode} status=200 duration=${elapsed()} chars=${text.length}`);
 				result = { status: 'ok', source: 'model', text, fromCache: false };
 			}
 		} catch (err) {
 			if (err instanceof OllamaError) {
-				this.logger?.info(`explain failed: kind=${err.kind} message=${err.message}`);
+				this.logger?.info(`explain failed: kind=${err.kind}${err.status ? ` status=${err.status}` : ''} duration=${elapsed()} message=${err.message}`);
 				result = this.errorResult(doc, err.kind, err.message);
 			} else {
-				this.logger?.info(`explain failed: kind=unavailable message=${(err as Error)?.message ?? String(err)}`);
+				this.logger?.info(`explain failed: kind=unavailable duration=${elapsed()} message=${(err as Error)?.message ?? String(err)}`);
 				result = this.errorResult(doc, 'unavailable', `Unexpected error: ${(err as Error)?.message ?? String(err)}`);
 			}
 		}

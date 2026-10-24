@@ -48,9 +48,9 @@
         },
         "tancode.requestTimeoutMs": {
           "type": "number",
-          "default": 30000,
+          "default": 120000,
           "minimum": 1000,
-          "description": "Timeout for each Ollama request in milliseconds."
+          "description": "Timeout for each Ollama request in milliseconds. Non-streamed generation must finish within this budget; local models on CPU often need 60s+."
         },
         "tancode.fallbackToRuleBased": {
           "type": "boolean",
