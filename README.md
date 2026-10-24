@@ -8,20 +8,34 @@ This repository currently contains the initial VS Code extension scaffold: a com
 
 ## Getting started
 
+Requires Node.js 20+ (see `engines` in `package.json`; `.npmrc` enforces it) and a desktop VS Code install of version 1.90 or later.
+
+From the repository root (the commands are identical on Windows, macOS, and Linux):
+
 ```bash
-npm install      # install dev dependencies (typescript, @types/vscode, @types/node)
-npm run compile  # build the extension to out/
+npm ci            # clean, reproducible install of dev dependencies
+npm run compile   # build the extension to out/
 npm run typecheck # type-check without emitting
-npm run watch    # recompile on change (default build task)
+npm run watch     # recompile on change (default build task)
 ```
 
 To run the extension:
 
-1. Open this folder in VS Code.
-2. Run `npm install` and `npm run compile` once.
-3. Press F5 to launch the Extension Development Host (`Run Extension` launch configuration; it runs the `npm: watch` build task first).
-4. In the Extension Development Host window, open the Command Palette and run `Tancode: Hello World`.
+1. Open this folder in desktop VS Code.
+2. Run `npm ci` and `npm run compile` once.
+3. Press F5 to launch the Extension Development Host (`Run Extension` launch configuration; it runs the `npm: watch` build task first and waits for the TypeScript watch build to report ready).
+4. In the Extension Development Host window, open the Command Palette (Ctrl+Shift+P) and run `Tancode: Hello World`.
 5. An information message confirms Tancode is running.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `'tsc' is not recognized as an internal or external command` (Windows) or `tsc: not found` | `node_modules` is missing — dependencies were never installed, so the local `tsc` binary doesn't exist. TypeScript is a project devDependency, not a global tool. | Run `npm ci` in the repository root, then retry. The `precompile`/`pretypecheck`/`prewatch` scripts now print this hint automatically. |
+| `npm ci` fails with an `EBADENGINE` warning-as-error | Node.js is older than the `>=20` required by `engines`. | Install Node.js 20 or later from https://nodejs.org and reopen the terminal. |
+| Compile errors after a clean install | TypeScript errors in source. | Run `npm run typecheck` to list them without emitting output. |
+| F5 does nothing or no Extension Development Host window appears | The `npm: watch` prelaunch task hasn't finished its first build, or compilation failed. | Check the Terminal panel for the `npm: watch` task output; run `npm run compile` manually to see errors. Confirm `.vscode/launch.json` exists and `out/extension.js` was emitted. |
+| `Tancode: Hello World` missing from the Command Palette in the Extension Host | The extension didn't activate or the command id doesn't match. | Confirm `contributes.commands[0].command` in `package.json` is `tancode.helloWorld` and matches `vscode.commands.registerCommand('tancode.helloWorld', ...)` in `src/extension.ts`. Check the Extension Host's developer console for activation errors. |
 
 ## Configuration
 
