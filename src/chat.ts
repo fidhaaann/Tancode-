@@ -6,6 +6,8 @@ export type ChatIntent =
 	| { type: 'pause' }
 	| { type: 'resume' }
 	| { type: 'why' }
+	| { type: 'wrap-up' }
+	| { type: 'clear' }
 	| { type: 'quiz-answer' }
 	| { type: 'direct' };
 
@@ -15,6 +17,10 @@ export type ChatIntent =
 const PAUSE_RE = /\bpause\b|\b(stop|disable|mute|quiet)\b[^.?!]*\bproactiv/i;
 const RESUME_RE = /\b(resume|start|enable|unpause|restart)\b[^.?!]*\b(proactiv|assistant|teaching|insights|notifications?)/i;
 const WHY_RE = /why (are you|did you|do you keep) (telling|showing|saying|explaining|messaging)/i;
+// Explicit finish signals only — per spec, never infer a feature is done
+// from saves alone.
+const WRAPUP_RE = /\b(wrap ?up|recap|summari[sz]e (the )?(project|session|what (i|we) built)|i'?m done|i'?m finished|we'?re done)\b/i;
+const CLEAR_RE = /\b(clear|reset|empty)\b[^.?!]*\b(chat|conversation|history)\b/i;
 
 export function routeMessage(text: string, hasPendingQuestion: boolean): ChatIntent {
 	const t = text.trim();
@@ -26,6 +32,12 @@ export function routeMessage(text: string, hasPendingQuestion: boolean): ChatInt
 	}
 	if (WHY_RE.test(t)) {
 		return { type: 'why' };
+	}
+	if (CLEAR_RE.test(t)) {
+		return { type: 'clear' };
+	}
+	if (WRAPUP_RE.test(t)) {
+		return { type: 'wrap-up' };
 	}
 	if (hasPendingQuestion) {
 		return { type: 'quiz-answer' };

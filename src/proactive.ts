@@ -36,6 +36,19 @@ export function pickDiagnostic(diags: DiagLike[], errorsOnly: boolean): DiagLike
 
 export type ProactiveVerdict = 'allow' | 'seen' | 'cooldown' | 'limit';
 
+// Mentoring frequency → effective cooldown between proactive messages.
+// 'custom' defers to the explicit tancode.proactive.cooldownSeconds setting.
+export type MentoringFrequency = 'low' | 'balanced' | 'high' | 'custom';
+
+export function effectiveCooldownSeconds(frequency: MentoringFrequency, customSeconds: number): number {
+	switch (frequency) {
+		case 'low': return 300;
+		case 'balanced': return 90;
+		case 'high': return 30;
+		default: return customSeconds;
+	}
+}
+
 // Budget gate for assistant-initiated messages: dedupe by key, rate-limit by
 // cooldown, and cap the total per session. check() does not mutate — call
 // commit() only when a message actually posts, so a blocked or failed

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ExplanationCache } from '../model/cache';
 import { OllamaClient, OllamaError } from '../model/ollama';
-import { DocLike, ExplanationResult, ExplanationService } from '../model/service';
+import { DocLike, ExplanationResult, ExplanationService, ServiceOptions } from '../model/service';
 import type { GenerateOptions } from '../model/ollama';
 
 function doc(overrides: Partial<DocLike> = {}): DocLike {
@@ -18,8 +18,9 @@ function doc(overrides: Partial<DocLike> = {}): DocLike {
 
 function makeService(
 	generate: (model: string, sys: string, prompt: string, opts?: GenerateOptions) => Promise<string>,
-	fallbackToRules = true,
+	extra: Partial<ServiceOptions> | boolean = true,
 ) {
+	const fallbackToRules = typeof extra === 'boolean' ? extra : extra.fallbackToRules !== false;
 	const calls: string[] = [];
 	const genOpts: (GenerateOptions | undefined)[] = [];
 	const logs: string[] = [];
@@ -36,7 +37,7 @@ function makeService(
 		new ExplanationCache<ExplanationResult>(),
 		d => (d.getText().includes('export') ? ({ summary: 'rules say it exports things', symbols: [], imports: [], exports: [], details: [], fileName: 'app.ts', languageId: 'typescript', languageName: 'TypeScript', lineCount: 1, nonBlankLineCount: 1 }) : undefined),
 		() => true,
-		{ model: 'm1', maxSourceBytes: 1024, fallbackToRules },
+		{ model: 'm1', maxSourceBytes: 1024, fallbackToRules, ...(typeof extra === 'object' ? extra : {}) },
 		{ info: m => logs.push(m) },
 	);
 	return { service, calls, genOpts, logs };
@@ -290,4 +291,27 @@ test('explainDiagnostic caches by diag key and carries num_predict=400', async (
 	await service.explainDiagnostic(doc(), sel, diag, 'diag:k1');
 	assert.equal(calls.length, 1);
 	assert.equal(genOpts[0]?.numPredict, 400);
+});
+
+test('projectOrientation caches by facts hash and caps output', async () => {
+	const { service, calls, genOpts } = makeService(async () => 'Looks like a TypeScript web app.');
+	await service.projectOrientation('facts-v1', 'orient:k1');
+	await service.projectOrientation('facts-v1', 'orient:k1');
+	assert.equal(calls.length, 1);
+	assert.match(calls[0], /<project_facts>\nfacts-v1/);
+	assert.equal(genOpts[0]?.numPredict, 350);
+});
+
+test('sessionRecap is never cached', async () => {
+	const { service, calls } = makeService(async () => 'You built a form handler.');
+	const data = { projectFacts: 'x', touchedFiles: ['a.ts'], history: [] };
+	await service.sessionRecap(data);
+	await service.sessionRecap(data);
+	assert.equal(calls.length, 2);
+});
+
+test('detailed depth scales output budgets ~1.5x', async () => {
+	const { service, genOpts } = makeService(async () => 'x', { depth: 'detailed' }); // eslint-disable-line
+	await service.explain(doc(), 'summary');
+	assert.equal(genOpts[0]?.numPredict, 300, 'summary 200 * 1.5');
 });
