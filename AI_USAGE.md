@@ -6,6 +6,7 @@ Use Codex during the hackathon and briefly document its actual contribution here
 
 | Date and time with timezone | Tool / model, if known | Task | Assistance and affected files | Human review / corrections | Validation and result |
 | --- | --- | --- | --- | --- | --- |
+| 2026-10-24T23:45:00+05:30 | Devin (Cognition AI) | Milestone 3: selected-code learning + quiz | `tancode.explainSelectedCode` command + context menu; selection/learn/question/assessment prompts in `src/model/prompt.ts`; `explainSelection`/`generateQuestion`/`assessAnswer` in `src/model/service.ts`; new `src/messages.ts` dispatch table; selection/learn/quiz/quizResult views in `src/view.ts`; target-aware `src/explanationPanel.ts`; README | Pending | `compile`, `typecheck`, `npm test` — 55/55 pass; interactive panel flows need desktop VS Code |
 | 2026-10-25T03:30:00+05:30 | Devin (Cognition AI) | Faster Qwen + click diagnostics | `think: false` on generate requests; webview message logging | Pending | `compile`, `typecheck`, `npm test` — 34/34 pass |
 | 2026-10-25T03:00:00+05:30 | Devin (Cognition AI) | Retry/detail button fix | Mode-aware `lastDoc`, `summary` handler + Back-to-summary button, loading on forced retry | Pending | `compile`, `typecheck`, `npm test` — 34/34 pass; interactive clicks need desktop VS Code |
 | 2026-10-25T02:45:00+05:30 | Devin (Cognition AI) | Panel focus wipe + Ollama health probe | `explanationPanel.ts` focus guard, `/api/tags` health logging | Pending | `compile`, `typecheck`, `npm test` — 34/34 pass; focus behavior needs desktop VS Code |

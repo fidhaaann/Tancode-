@@ -4,6 +4,13 @@ Record each meaningful project change during the event, newest first. Update thi
 
 ## Event build log
 
+## 2026-10-24T23:45:00+05:30 — Milestone 3: selected-code learning + Test My Understanding
+
+- Changed: New `Tancode: Explain Selected Code` command (`src/extension.ts`, `package.json` command + `editor/context` menu gated on `editorHasSelection`) — explains just the selected lines with a few lines of surrounding context clearly separated (`<selection>` vs `<context>` tags). `src/model/prompt.ts` adds selection/learn/question/assessment prompt builders and `parseSections`. `src/model/service.ts` adds `explainSelection` (cache key includes mode + line range), `generateQuestion`, and `assessAnswer` (quiz calls never cached). `src/messages.ts` is a new vscode-free dispatch table for every webview message — Phase-1 audit made the message contract directly testable. `src/view.ts` gains selection/learn/quiz/quizResult states, a textarea answer input, and per-mode actions (Explain / Learn / Test My Understanding / Retry / Back to file). `src/explanationPanel.ts` now tracks a file-or-selection target, keeps selection/quiz views stable across editor switches, and routes Retry to the last attempted flow (explanation, question, or assessment).
+- Why: Learn-while-vibe-coding milestone — teach selected code in structured sections and verify understanding with a practice question, while keeping the existing file explanation and all safety properties.
+- Validation: `npm run compile`, `npm run typecheck`, `npm test` — 55/55 pass, incl. dispatch coverage for every message type, selection/learn/quiz prompt builders, cache separation by mode+range, a wire-level e2e asserting `<selection>` tags reach `/api/generate`, and a render test that fails if any button's `data-action` lacks a dispatcher handler.
+- Limitations: Interactive flows (context menu, textarea submit, expandable sections) need desktop VS Code verification; live inference against real Ollama remains the user's manual check.
+
 ## 2026-10-25T03:30:00+05:30 — Faster Qwen replies + webview click logging
 
 - Changed: `src/model/ollama.ts` sends `think: false` with every generate request — qwen3-style reasoning models spend most of their latency on a hidden thinking pass; disabling it is several times faster (ignored by non-thinking models and older Ollama versions). `src/explanationPanel.ts` logs every incoming webview message (`webview message: type=…`) so dead-button reports can be told apart: a click that logs nothing means stale build/script, not dispatch.
