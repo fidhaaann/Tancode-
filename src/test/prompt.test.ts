@@ -45,7 +45,8 @@ test('detail mode asks for a deeper explanation than summary', () => {
 	const summary = buildPrompt(doc, 'summary').prompt;
 	const detail = buildPrompt(doc, 'detail').prompt;
 	assert.notEqual(summary, detail);
-	assert.match(summary, /3-5 sentences/);
+	assert.match(summary, /100-200 words/);
+	assert.match(summary, /Purpose; Key components; How it works; Dependencies/);
 	assert.match(detail, /inputs and outputs/);
 });
 

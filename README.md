@@ -9,7 +9,7 @@ All inference runs against a locally installed Ollama server. Nothing is uploade
 ## Features
 
 - **Chat-first coding mentor** — a conversational panel where Tancode can also speak first: user questions, plans, code tasks, debugging requests, explanations, and follow-ups are sent as actual chat turns; current file/selection context is supporting evidence, not a forced explanation request.
-- **File explanations** — open a supported source file and get a concise, educational explanation of what it does.
+- **File explanations** — open a supported source file and get a concise summary covering purpose, key components, flow, and dependencies. Large files use bounded structural evidence instead of sending the whole file to Ollama.
 - **Selected-code context** — select code and run *Tancode: Explain Selected Code* for an explanation, a structured Learn breakdown, or a "Test My Understanding" quiz.
 - **Proactive learning insights** — event-driven notes on meaningful saves, new diagnostics, and opened project manifests; debounced, deduplicated, cooldown-gated, and pausable.
 - **Error and diagnostic explanations** — explains what the editor diagnostic actually says, the likely cause, the underlying concept, and how to verify a fix — never applies changes.
@@ -147,6 +147,7 @@ All settings live under the `tancode.*` prefix (Settings → search "tancode").
 - *Understand an error:* write code that produces a diagnostic — a tagged error note appears automatically explaining meaning, likely cause, and how to verify a fix.
 - *Ask about an error:* ask "why am I getting this?" or "how do I fix this warning?" — current VS Code error/warning diagnostics are included with their file, range, code, severity, and provider. Confirmed editor evidence is kept distinct from model hypotheses.
 - *Explain a JSON config:* open `tsconfig.json` — get an explanation plus a proactive note grounded in the extracted compiler settings.
+- *Summarize a large file:* use the default summary for a compact purpose/components/flow/dependencies answer; choose **Explain in more detail** when a full section-based walkthrough is needed.
 - *Check dependency versions:* open `package.json` and ask "what TypeScript version does this project need?" — Tancode answers with the declared range vs lockfile-resolved version, never a guessed install.
 - *Plain-language explanation:* ask "explain this like I'm a beginner" — technical + simplified explanations are on by default.
 - *Large file:* open a big file — the header explains it was analyzed in sections and discloses any section that couldn't be analyzed.

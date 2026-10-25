@@ -81,3 +81,38 @@ export function declarationsOf(text: string): string[] {
 	}
 	return out;
 }
+
+export interface CompactFileContext {
+	imports: string[];
+	declarations: string[];
+	sections: string[];
+	sample: string;
+}
+
+/** Extracts bounded structural evidence for a fast summary without claiming
+ * that omitted implementation details were inspected. */
+export function compactFileContext(text: string, languageId: string, maxChars = 12000): CompactFileContext {
+	const lines = text.split(/\r?\n/);
+	const imports = lines
+		.filter(line => /^\s*(?:import\s|export\s+\{.*\}\s+from\s|from\s+\S+\s+import\s|#include\s|require\s*\(|using\s+|use\s+)/.test(line))
+		.map(line => line.trim())
+		.slice(0, 30);
+	const declarations = declarationsOf(text).slice(0, 50);
+	const sections = lines
+		.filter(line => /^\s*(?:#{1,6}\s|<h[1-6]\b|(?:@media|@layer|@supports)\b|[\[{"]?[A-Za-z][\w.-]*["}]?\s*:)/i.test(line))
+		.map(line => line.trim())
+		.slice(0, 40);
+	const head = lines.slice(0, 12).join('\n');
+	const tail = lines.length > 24 ? lines.slice(-8).join('\n') : '';
+	let sample = [head, tail ? '[...middle omitted for summary...]\n' + tail : '']
+		.filter(Boolean).join('\n');
+	if (sample.length > maxChars) {
+		sample = sample.slice(0, maxChars) + '\n[remaining structural sample omitted]';
+	}
+	return {
+		imports,
+		declarations: declarations.length > 0 ? declarations : [`No declarations detected by the ${languageId} structural scan.`],
+		sections,
+		sample,
+	};
+}

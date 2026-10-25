@@ -2,6 +2,14 @@
 
 Record each meaningful project change during the event, newest first. Update this file in the same commit as the change. Use a real timestamp with timezone, for example `YYYY-MM-DDTHH:MM:SS+05:30`.
 
+## 2026-10-25T09:35:00+05:30 — Add lightweight current-file summaries
+
+- Root cause: the default summary prompt still accepted the full file, and oversized single-line files bypassed sectioning and were sent whole to Ollama.
+- Changed: default summaries now request only Purpose, Key components, How it works, and Dependencies in about 100–200 words. Large summaries use bounded structural evidence containing imports, declarations, major sections, and head/tail samples; omitted implementation details are disclosed.
+- Changed: detailed mode remains the explicit full-analysis path with section-based processing for large files. Existing URI/version/mode cache keys continue to invalidate summaries after edits and keep detail results separate.
+- Tests: added compact-context extraction, large-summary bounded-prompt, and concise-summary prompt coverage. `npm run typecheck` and `npm test` pass — 151/151.
+- Limitation: structural extraction is heuristic and may miss declarations in unusual syntax; detailed mode is available when deeper inspection is needed.
+
 ## 2026-10-25T09:20:00+05:30 — Fix Retry and detailed explanation lifecycle
 
 - Root cause: button names and dispatch entries matched, but unexpected request exceptions could escape after the loading state was rendered, leaving the context card stuck. Retry/detail also lacked an explicit operation guard against overlapping clicks.

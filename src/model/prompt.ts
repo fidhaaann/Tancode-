@@ -44,9 +44,10 @@ export function buildPrompt(doc: SourceDoc, mode: ExplainMode, simplified = true
 			'Do not repeat the code verbatim.',
 		]
 		: [
-			`Explain this ${doc.languageId} file named "${doc.fileName}" in 3-5 sentences:`,
-			'its purpose, its main functions/classes/components, and one key concept a learner should understand.',
-			'Do not repeat the code verbatim.',
+			`Give a concise summary of this ${doc.languageId} file named "${doc.fileName}" in about 100-200 words (fewer for simple files).`,
+			'Cover exactly these points with short labels: Purpose; Key components; How it works; Dependencies.',
+			'Use only evidence in the file. Do not provide a line-by-line walkthrough, quiz, analogy, or extensive WHAT/HOW/WHY teaching.',
+			'If the file is represented by a structural sample, explicitly say that implementation details were omitted.',
 		];
 
 	const prior = mode === 'detail' && previousExplanation
@@ -56,6 +57,28 @@ export function buildPrompt(doc: SourceDoc, mode: ExplainMode, simplified = true
 	return {
 		system: SYSTEM_PROMPT,
 		prompt: [...request, prior, '', '<file>', doc.text, '</file>'].join('\n'),
+	};
+}
+
+export function buildCompactSummaryPrompt(
+	doc: SourceDoc,
+	context: { imports: string[]; declarations: string[]; sections: string[]; sample: string },
+): { system: string; prompt: string } {
+	return {
+		system: SYSTEM_PROMPT,
+		prompt: [
+			`Give a concise summary of the ${doc.languageId} file "${doc.fileName}" in about 100-200 words (fewer for simple files).`,
+			'Cover exactly: Purpose; Key components; How it works; Dependencies.',
+			'This is bounded structural evidence, not the complete file. Do not invent omitted behavior or claim the entire implementation was inspected.',
+			'Use short labels and say that the summary is based on structural evidence when details are omitted.',
+			'',
+			'<structural_evidence>',
+			`Imports:\n${context.imports.join('\n') || '(none detected)'}`,
+			`Declarations:\n${context.declarations.join(', ')}`,
+			`Major sections:\n${context.sections.join('\n') || '(none detected)'}`,
+			`Bounded sample:\n${context.sample}`,
+			'</structural_evidence>',
+		].join('\n'),
 	};
 }
 

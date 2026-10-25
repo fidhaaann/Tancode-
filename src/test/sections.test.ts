@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { splitSections, declarationsOf } from '../model/sections';
+import { compactFileContext, splitSections, declarationsOf } from '../model/sections';
 
 test('small file is a single section', () => {
 	const s = splitSections('line1\nline2', 1000);
@@ -47,4 +47,16 @@ test('declarationsOf finds cross-section symbols', () => {
 	assert.ok(decls.includes('Foo'));
 	assert.ok(decls.includes('bar'));
 	assert.ok(!decls.includes('x'), 'const not matched as a named decl by the fn/class regex');
+});
+
+test('compactFileContext extracts bounded structural evidence', () => {
+	const context = compactFileContext(
+		'import x from "x";\nexport function run() {}\n# Settings\n' + 'body {}\n'.repeat(2000),
+		'typescript',
+		500,
+	);
+	assert.deepEqual(context.imports, ['import x from "x";']);
+	assert.ok(context.declarations.includes('run'));
+	assert.ok(context.sections.some(section => section.includes('# Settings')));
+	assert.ok(context.sample.length <= 540);
 });

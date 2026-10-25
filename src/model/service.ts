@@ -2,7 +2,7 @@ import type { FileExplanation } from '../analysis';
 import { ExplanationCache } from './cache';
 import { OllamaClient, OllamaError, OllamaErrorKind } from './ollama';
 import type { GenerateOptions } from './ollama';
-import { declarationsOf, splitSections } from './sections';
+import { compactFileContext, declarationsOf, splitSections } from './sections';
 import {
 	buildAssessmentPrompt,
 	buildChatRequest,
@@ -13,6 +13,7 @@ import {
 	buildOrientationPrompt,
 	buildSectionPrompt,
 	buildPrompt,
+	buildCompactSummaryPrompt,
 	buildQuestionPrompt,
 	buildSelectionPrompt,
 	buildWrapupPrompt,
@@ -161,6 +162,12 @@ export class ExplanationService {
 		// Files larger than the context budget are analyzed section-by-section
 		// (sequential, cancellable) then combined — never truncated or rejected.
 		const overBudget = doc.getText().length > this.options.maxSourceBytes;
+		const compactSummary = mode === 'summary' && overBudget
+			? buildCompactSummaryPrompt(
+				{ fileName: doc.fileName, languageId: doc.languageId, text: '' },
+				compactFileContext(doc.getText(), doc.languageId),
+			)
+			: undefined;
 		const parts = overBudget
 			? undefined
 			: buildPrompt(
@@ -169,7 +176,9 @@ export class ExplanationService {
 				this.simplified,
 				ui?.previousText,
 			);
-		const work = (overBudget
+		const work = (compactSummary
+			? this.runInference(compactSummary, tag, key, doc, this.capFor(mode), ui)
+			: overBudget
 			? this.explainSectioned(doc, mode, key, tag, ui)
 			: this.runInference(parts!, tag, key, doc, this.capFor(mode), ui))
 			.finally(() => {

@@ -215,7 +215,7 @@ test('a doc over the context budget is analyzed in sections, not rejected', asyn
 		prompt.includes('<section_summaries>') ? 'final combined answer' : 'section summary');
 	// 6 x ~600-char lines => ~3.6KB, over the 1KB test budget => 3+ sections.
 	const big = Array.from({ length: 6 }, (_, i) => `export function fn${i}() { return '${'x'.repeat(500)}'; }`).join('\n');
-	const res = await service.explain(doc({ getText: () => big }), 'summary');
+	const res = await service.explain(doc({ getText: () => big }), 'detail');
 	assert.equal(res.status, 'ok');
 	if (res.status === 'ok' && res.source === 'model') {
 		assert.equal(res.text, 'final combined answer');
@@ -230,7 +230,7 @@ test('sectioned analysis cancels between sections', async () => {
 	let calls = 0;
 	const { service } = makeService(async () => { calls++; controller.abort(); return 's'; });
 	const big = Array.from({ length: 6 }, (_, i) => `function f${i}() { return '${'x'.repeat(500)}'; }`).join('\n');
-	const res = await service.explain(doc({ getText: () => big }), 'summary', false, { signal: controller.signal });
+	const res = await service.explain(doc({ getText: () => big }), 'detail', false, { signal: controller.signal });
 	assert.equal(res.status, 'error');
 	assert.ok(calls < 10, 'stopped before running every section + combine');
 });
@@ -243,7 +243,7 @@ test('a failed section is disclosed to the combine prompt', async () => {
 		return n > 2 ? 'combined' : 'section summary';
 	});
 	const big = Array.from({ length: 6 }, (_, i) => `function g${i}() { return '${'x'.repeat(500)}'; }`).join('\n');
-	const res = await service.explain(doc({ getText: () => big }), 'summary');
+	const res = await service.explain(doc({ getText: () => big }), 'detail');
 	assert.equal(res.status, 'ok');
 	assert.match(calls[calls.length - 1], /could not be analyzed/);
 });
@@ -253,6 +253,23 @@ test('single-line oversized doc (minified) sends one request, not a rejection', 
 	const res = await service.explain(doc({ getText: () => 'x'.repeat(3000) }), 'summary');
 	assert.equal(res.status, 'ok');
 	assert.equal(calls.length, 1);
+});
+
+test('large summary uses bounded structural evidence instead of the full file', async () => {
+	const source = [
+		'import { readFile } from "node:fs";',
+		'export class ReportService {',
+		'  async buildReport() { return readFile("report.json"); }',
+		'}',
+		'// implementation '.repeat(2000),
+	].join('\n');
+	const { service, calls } = makeService(async () => 'Purpose: builds reports.\nKey components: ReportService.\nHow it works: reads report data.\nDependencies: node:fs.');
+	const result = await service.explain(doc({ getText: () => source }), 'summary');
+	assert.equal(result.status, 'ok');
+	assert.equal(calls.length, 1);
+	assert.match(calls[0], /<structural_evidence>/);
+	assert.match(calls[0], /ReportService/);
+	assert.ok(calls[0].length < source.length / 2, 'summary prompt should be much smaller than the source');
 });
 
 test('per-mode num_predict limits keep routine answers short', async () => {
