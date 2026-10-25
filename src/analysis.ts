@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { summarizeJson } from './jsonc';
+import { FILE_TYPES, isSupportedFile } from './fileTypes';
 
 export interface SymbolInfo {
 	kind: 'function' | 'class' | 'interface' | 'type' | 'enum' | 'component' | 'constant' | 'method';
@@ -26,6 +27,9 @@ const SUPPORTED_LANGUAGES = new Set([
 	'python', 'java', 'c', 'cpp', 'csharp', 'go', 'rust', 'php', 'ruby', 'swift', 'kotlin', 'scala',
 	'json', 'jsonc',
 ]);
+for (const fileType of FILE_TYPES) {
+	for (const languageId of fileType.languageIds) SUPPORTED_LANGUAGES.add(languageId);
+}
 
 const LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
 	typescript: 'TypeScript',
@@ -46,6 +50,12 @@ const LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
 	scala: 'Scala',
 	json: 'JSON',
 	jsonc: 'JSON with Comments',
+	css: 'CSS',
+	scss: 'SCSS',
+	sass: 'Sass',
+	less: 'Less',
+	html: 'HTML',
+	markdown: 'Markdown',
 };
 
 const MAX_SYMBOLS = 50;
@@ -124,6 +134,7 @@ function explainJson(
 		} else {
 			summaryParts.push('.');
 		}
+
 		if (parsed.maxDepth !== undefined && parsed.maxDepth > 2) {
 			details.push(`Nesting depth: ${parsed.maxDepth}`);
 		}
@@ -140,6 +151,42 @@ function explainJson(
 		summary: summaryParts.join(''),
 		symbols: [],
 		imports: [],
+		exports: [],
+		details,
+	};
+}
+
+function explainCss(
+	document: Pick<vscode.TextDocument, 'fileName' | 'getText'>,
+	languageId: string,
+	languageName: string,
+): FileExplanation {
+	const text = document.getText();
+	const lines = text.split(/\r?\n/);
+	const selectors = [...text.matchAll(/(^|})\s*([^@{}\s][^{}]*)\s*\{/gm)]
+		.map(match => match[2].trim())
+		.filter((value, index, all) => value.length > 0 && all.indexOf(value) === index)
+		.slice(0, MAX_SYMBOLS);
+	const variables = [...text.matchAll(/(--[\w-]+)\s*:/g)].map(m => m[1]).filter((v, i, a) => a.indexOf(v) === i).slice(0, MAX_SYMBOLS);
+	const imports = [...text.matchAll(/@import\s+(?:url\()?['"]?([^'")\s]+)['"]?/g)].map(m => m[1]).slice(0, MAX_IMPORTS);
+	const mediaQueries = [...text.matchAll(/@media\s+([^{]+)/g)].map(m => m[1].trim()).slice(0, 10);
+	const nonBlank = lines.filter(l => l.trim()).length;
+	const details = [
+		`Language: ${languageName}`,
+		`Lines: ${lines.length} total, ${nonBlank} non-blank`,
+		`Selectors (${selectors.length}): ${selectors.join(', ') || 'none detected'}`,
+		`Custom properties (${variables.length}): ${variables.join(', ') || 'none detected'}`,
+	];
+	if (mediaQueries.length > 0) details.push(`Media queries: ${mediaQueries.join('; ')}`);
+	return {
+		fileName: path.basename(document.fileName),
+		languageId,
+		languageName,
+		lineCount: lines.length,
+		nonBlankLineCount: nonBlank,
+		summary: `${path.basename(document.fileName)} is a ${languageName} stylesheet with ${selectors.length} selector${selectors.length === 1 ? '' : 's'} and ${variables.length} custom propert${variables.length === 1 ? 'y' : 'ies'}${mediaQueries.length > 0 ? `, plus ${mediaQueries.length} media quer${mediaQueries.length === 1 ? 'y' : 'ies'}` : ''}.`,
+		symbols: selectors.map(name => ({ kind: 'constant' as const, name, line: Math.max(1, lines.findIndex(line => line.includes(name)) + 1) })),
+		imports,
 		exports: [],
 		details,
 	};
@@ -193,8 +240,8 @@ const IMPORT_PATTERNS: Record<string, RegExp> = {
 	ruby: /^\s*require(?:_relative)?\s+['"]([^'"]+)['"]/,
 };
 
-export function isSupported(document: { languageId: string }): boolean {
-	return SUPPORTED_LANGUAGES.has(document.languageId);
+export function isSupported(document: { languageId: string; fileName?: string }): boolean {
+	return SUPPORTED_LANGUAGES.has(document.languageId) || (document.fileName ? isSupportedFile(document.fileName, document.languageId) : false);
 }
 
 export function explain(document: Pick<vscode.TextDocument, 'languageId' | 'fileName' | 'uri' | 'getText'>): FileExplanation | undefined {
@@ -213,6 +260,9 @@ export function explain(document: Pick<vscode.TextDocument, 'languageId' | 'file
 	// declaration/import pattern scanning.
 	if (languageId === 'json' || languageId === 'jsonc') {
 		return explainJson(document, text, languageId, languageName);
+	}
+	if (languageId === 'css' || languageId === 'scss' || languageId === 'sass' || languageId === 'less') {
+		return explainCss(document, languageId, languageName);
 	}
 	const fileName = path.basename(document.uri.fsPath) || document.uri.path.split('/').pop() || 'untitled';
 

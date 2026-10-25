@@ -12,6 +12,8 @@ import { assistantMessage, ChatEntry, pushTurn, HistoryTurn, stateEntry, userMes
 import { routeMessage } from './chat';
 import { diagKey, DiagLike, effectiveCooldownSeconds, hashContent, pickDiagnostic, ProactiveBudget } from './proactive';
 import { collectProjectFacts, collectTechProfile, formatFacts, formatTechProfile, ProjectFacts, TechProfile } from './project';
+import { findProjectFile, readProjectFile } from './fileScanner';
+import { languageIdFor } from './fileTypes';
 import { execFileSync } from 'node:child_process';
 
 const PANEL_VIEW_TYPE = 'tancode.explanation';
@@ -111,6 +113,7 @@ export class ExplanationPanel {
 	private knowledgeCheckDone = new Set<string>();
 	private quizEntryId: number | undefined;
 	private diagSeen = new Set<string>();
+	private pendingDiagnosticUris = new Set<string>();
 	private diagBusy = false;
 	private diagTimer: NodeJS.Timeout | undefined;
 	private lastInsightHash: string | undefined;
@@ -287,16 +290,14 @@ export class ExplanationPanel {
 					clear: () => this.clearConversation(),
 				});
 			}),
-			// Proactive trigger 1: editor diagnostics — debounced; only the
-			// active file's diagnostics are ever considered.
+			// Proactive trigger 1: editor diagnostics — debounced and
+			// deduplicated across the workspace. The active file is preferred,
+			// but diagnostics in other workspace files are also explainable.
 			vscode.languages.onDidChangeDiagnostics(event => {
-				const editor = vscode.window.activeTextEditor;
-				if (!editor || !this.settings.proactiveEnabled) {
+				if (!this.settings.proactiveEnabled) {
 					return;
 				}
-				if (!event.uris.some(u => u.toString() === editor.document.uri.toString())) {
-					return;
-				}
+				for (const uri of event.uris) this.pendingDiagnosticUris.add(uri.toString());
 				this.scheduleDiagCheck();
 			}),
 			// Proactive trigger 2: a meaningful change saved in the active file.
@@ -376,7 +377,7 @@ export class ExplanationPanel {
 			client,
 			this.cache,
 			doc => rulesExplain(doc as vscode.TextDocument),
-			languageId => isSupported({ languageId }),
+			(languageId, fileName) => isSupported({ languageId, fileName }),
 			{
 				model: this.settings.ollamaModel,
 				maxSourceBytes: this.settings.maxSourceBytes,
@@ -801,13 +802,40 @@ export class ExplanationPanel {
 		}
 	}
 
-	private currentDoc(): vscode.TextDocument | DocLike | undefined {
+	private async currentDoc(question?: string): Promise<vscode.TextDocument | DocLike | undefined> {
 		if (this.target.kind === 'selection') {
 			return this.selectionDoc(this.target);
 		}
 		// Chat answers describe the pinned context file, not whichever
 		// editor happens to have focus.
-		return this.pinnedDoc ?? vscode.window.activeTextEditor?.document;
+		const pinned = this.pinnedDoc ?? vscode.window.activeTextEditor?.document;
+		if (pinned || !question) {
+			return pinned;
+		}
+		const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+		if (!root) {
+			return undefined;
+		}
+		const reference = question.match(/(?:^|[\s"'`])((?:[\w.-]+[\\/])*[\w.-]+\.[A-Za-z0-9]+|Dockerfile|Makefile|CMakeLists\.txt)(?=$|[\s"'`,.:;)])/i)?.[1];
+		if (!reference) {
+			return undefined;
+		}
+		const file = findProjectFile(root, reference);
+		if (!file) {
+			return undefined;
+		}
+		return {
+			fileName: file.relativePath,
+			languageId: languageIdFor(file.relativePath, file.languageId) ?? file.languageId,
+			uri: { fsPath: file.absolutePath, toString: () => vscode.Uri.file(file.absolutePath).toString() },
+			version: 0,
+			getText: () => {
+				const text = readProjectFile(file);
+				return text.length > this.settings.maxSourceBytes
+					? `${text.slice(0, this.settings.maxSourceBytes)}\n[remaining content omitted from chat context]`
+					: text;
+			},
+		};
 	}
 
 	// One dismissible note per visited file — tells the user the context was
@@ -824,7 +852,7 @@ export class ExplanationPanel {
 	}
 
 	private async answerDirect(text: string): Promise<void> {
-		const doc = this.currentDoc();
+		const doc = await this.currentDoc(text);
 		if (!doc) {
 			this.pushEntry(assistantMessage(++this.nextId, 'info', 'Open a source file or select some code, then ask again.'));
 			return;
@@ -850,14 +878,46 @@ export class ExplanationPanel {
 		this.beginInflight();
 		let result: ExplanationResult;
 		try {
-			result = await this.service.chatAnswer(doc, sel, text, this.history, { signal: abort.signal, onToken }, this.techProfileText());
+			// onChat records the visible user turn before starting inference; do
+			// not send that same turn once as history and again as the current
+			// user message.
+			const errorContext = this.errorContextForChat(text);
+			const projectContext = [this.techProfileText(), errorContext].filter((value): value is string => Boolean(value)).join('\n\n') || undefined;
+			result = await this.service.chatAnswer(doc, sel, text, this.history.slice(0, -1), { signal: abort.signal, onToken }, projectContext);
 		} finally {
 			this.endInflight();
 		}
+
 		if (seq !== this.updateSeq) {
 			return;
 		}
 		this.finishChatEntry(entryId, result);
+	}
+
+	private errorContextForChat(question: string): string | undefined {
+		if (!/\b(error|errors|diagnostic|warning|exception|stack trace|fix this|why (am i|is this) happening)\b/i.test(question)) {
+			return undefined;
+		}
+		const diagnostics = vscode.languages.getDiagnostics()
+			.flatMap(([uri, values]) => values.map(d => ({
+				uri,
+				line: d.range.start.line + 1,
+				column: d.range.start.character + 1,
+				endLine: d.range.end.line + 1,
+				message: d.message,
+				severity: d.severity === vscode.DiagnosticSeverity.Error ? 'error' : d.severity === vscode.DiagnosticSeverity.Warning ? 'warning' : 'info',
+				source: d.source ?? 'unknown provider',
+				code: d.code === undefined ? '' : typeof d.code === 'object' ? String(d.code.value) : String(d.code),
+			})))
+			.filter(d => d.severity === 'error' || d.severity === 'warning')
+			.slice(0, 20);
+		if (diagnostics.length === 0) {
+			return 'Confirmed diagnostic context: no current error or warning diagnostics were reported by VS Code. Any code issue discussed must be labelled as a potential issue, not a confirmed error.';
+		}
+		return [
+			'Confirmed diagnostic context from VS Code (preserve these messages and do not call hypotheses confirmed):',
+			...diagnostics.map(d => `${d.severity.toUpperCase()} ${d.uri.fsPath}:${d.line}:${d.column}-${d.endLine} [${d.source}${d.code ? ` ${d.code}` : ''}]: ${d.message}`),
+		].join('\n');
 	}
 
 	private async answerPendingQuestion(answer: string): Promise<void> {
@@ -954,7 +1014,10 @@ export class ExplanationPanel {
 			return undefined;
 		}
 		try {
-			this.projectFacts = collectProjectFacts(folder.uri.fsPath);
+			this.projectFacts = collectProjectFacts(folder.uri.fsPath, {
+				excludeDirs: this.settings.scanExcludeDirs.length > 0 ? this.settings.scanExcludeDirs : undefined,
+				includeGenerated: this.settings.scanIncludeGenerated,
+			});
 			return this.projectFacts;
 		} catch {
 			return undefined;
@@ -1112,22 +1175,36 @@ export class ExplanationPanel {
 	}
 
 	private async evaluateDiagnostics(): Promise<void> {
-		const editor = vscode.window.activeTextEditor;
-		if (!editor || this.diagBusy || !this.settings.proactiveEnabled) {
+		if (this.diagBusy || !this.settings.proactiveEnabled) {
 			return;
 		}
-		const uri = editor.document.uri.toString();
-		const diags: DiagLike[] = vscode.languages.getDiagnostics(editor.document.uri).map(d => ({
-			severity: d.severity,
-			message: d.message,
-			line: d.range.start.line + 1,
-			code: d.code === undefined ? undefined : typeof d.code === 'object' ? String(d.code.value) : String(d.code),
-		}));
-		const unseen = diags.filter(d => !this.diagSeen.has(diagKey(uri, d)));
-		const diag = pickDiagnostic(unseen, this.settings.proactiveLevel === 'errors-only');
-		if (!diag) {
+		const activeUri = vscode.window.activeTextEditor?.document.uri.toString();
+		const all = vscode.languages.getDiagnostics()
+			.filter(([uri]) => this.pendingDiagnosticUris.size === 0 || this.pendingDiagnosticUris.has(uri.toString()))
+			.flatMap(([uri, diagnostics]) => diagnostics.map(d => ({
+				uri,
+				diag: {
+					severity: d.severity,
+					message: d.message,
+					line: d.range.start.line + 1,
+					column: d.range.start.character + 1,
+					endLine: d.range.end.line + 1,
+					endColumn: d.range.end.character + 1,
+					source: d.source,
+					code: d.code === undefined ? undefined : typeof d.code === 'object' ? String(d.code.value) : String(d.code),
+					evidence: 'confirmed-diagnostic' as const,
+				},
+			})));
+		this.pendingDiagnosticUris.clear();
+		const candidates = all.filter(({ uri, diag }) => !this.diagSeen.has(diagKey(uri.toString(), diag)));
+		const preferred = activeUri ? candidates.filter(item => item.uri.toString() === activeUri) : [];
+		const selected = pickDiagnostic(preferred.length > 0 ? preferred.map(item => item.diag) : candidates.map(item => item.diag), this.settings.proactiveLevel === 'errors-only');
+		if (!selected) {
 			return;
 		}
+		const selectedItem = (preferred.length > 0 ? preferred : candidates).find(item => item.diag === selected)!;
+		const uri = selectedItem.uri.toString();
+		const diag = selectedItem.diag;
 		const hash = diagKey(uri, diag);
 		const verdict = this.proactiveBudget.check(`diag:${hash}`);
 		if (verdict === 'seen' || verdict === 'limit') {
@@ -1145,7 +1222,7 @@ export class ExplanationPanel {
 		this.beginInflight();
 		const abort = this.beginProactive();
 		try {
-			const doc = editor.document;
+			const doc = await vscode.workspace.openTextDocument(selectedItem.uri);
 			const line = Math.min(diag.line, doc.lineCount);
 			const from = Math.max(1, line - DIAG_CONTEXT_LINES);
 			const to = Math.min(doc.lineCount, line + DIAG_CONTEXT_LINES);
@@ -1158,7 +1235,17 @@ export class ExplanationPanel {
 			};
 			const result = await this.service.explainDiagnostic(
 				doc, sel,
-				{ message: diag.message, severity: diag.severity === 0 ? 'error' : 'warning', line, code: diag.code === undefined ? undefined : String(diag.code) },
+				{
+					message: diag.message,
+					severity: diag.severity === 0 ? 'error' : 'warning',
+					line,
+					column: diag.column,
+					endLine: diag.endLine,
+					endColumn: diag.endColumn,
+					source: diag.source,
+					evidence: diag.evidence,
+					code: diag.code === undefined ? undefined : String(diag.code),
+				},
 				`diag:${uri}:${hash}`,
 				{ signal: abort.signal },
 			);

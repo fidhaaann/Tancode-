@@ -3,10 +3,11 @@ import test from 'node:test';
 import { diagKey, hashContent, pickDiagnostic, ProactiveBudget } from '../proactive';
 
 test('diagKey is stable per file+line+code+message', () => {
-	const d = { severity: 0, message: 'cannot find x', line: 5, code: 'TS2304' };
+	const d = { severity: 0, message: 'cannot find x', line: 5, column: 3, source: 'ts', code: 'TS2304' };
 	assert.equal(diagKey('file:///a.ts', d), diagKey('file:///a.ts', { ...d }));
 	assert.notEqual(diagKey('file:///a.ts', d), diagKey('file:///b.ts', d));
 	assert.notEqual(diagKey('file:///a.ts', d), diagKey('file:///a.ts', { ...d, line: 6 }));
+	assert.notEqual(diagKey('file:///a.ts', d), diagKey('file:///a.ts', { ...d, column: 4 }));
 });
 
 test('pickDiagnostic prefers the first error, then warnings', () => {

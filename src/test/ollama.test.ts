@@ -29,6 +29,38 @@ test('generate posts to /api/generate and returns the response text', async () =
 	assert.equal(sent.stream, false);
 });
 
+test('chat posts real conversation roles to /api/chat', async () => {
+	let called: { url: string; body: string } | undefined;
+	const client = new OllamaClient(BASE, 5000, async (url, init) => {
+		called = { url, body: String(init?.body) };
+		return fakeRes(200, { message: { role: 'assistant', content: 'Hello!' } });
+	});
+	const text = await client.chat('m1', [
+		{ role: 'system', content: 'You are helpful.' },
+		{ role: 'user', content: 'Hello' },
+	]);
+	assert.equal(text, 'Hello!');
+	assert.equal(called?.url, `${BASE}/api/chat`);
+	const sent = JSON.parse(called!.body);
+	assert.deepEqual(sent.messages, [
+		{ role: 'system', content: 'You are helpful.' },
+		{ role: 'user', content: 'Hello' },
+	]);
+	assert.equal(sent.stream, false);
+});
+
+test('chat streaming accumulates assistant message content', async () => {
+	const chunks: string[] = [];
+	const client = new OllamaClient(BASE, 5000, async () =>
+		streamRes([
+			'{"message":{"role":"assistant","content":"Hello "},"done":false}\n',
+			'{"message":{"role":"assistant","content":"world"},"done":true}\n',
+		]));
+	const text = await client.chat('m1', [{ role: 'user', content: 'Hi' }], { onToken: t => chunks.push(t) });
+	assert.equal(text, 'Hello world');
+	assert.deepEqual(chunks, ['Hello ', 'Hello world']);
+});
+
 test('404 from /api/generate becomes modelMissing', async () => {
 	const client = new OllamaClient(BASE, 5000, async () => fakeRes(404, 'model not found'));
 	await assert.rejects(

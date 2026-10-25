@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
 	buildAssessmentPrompt,
 	buildChatPrompt,
+	buildChatRequest,
 	buildDiagnosticPrompt,
 	buildInsightPrompt,
 	buildManifestInsightPrompt,
@@ -115,6 +116,27 @@ test('diagnostic prompt marks the diagnostic confirmed and causes inferred', () 
 	assert.match(parts.prompt, /follow-up question/i);
 });
 
+test('diagnostic prompt preserves evidence metadata and teaches a fix without applying it', () => {
+	const parts = buildDiagnosticPrompt(
+		{ fileName: 'styles.css', languageId: 'css', text: '.x { color: var(--missing); }' },
+		{ startLine: 1, endLine: 1, text: '.x { color: var(--missing); }' },
+		{
+			message: 'Unknown custom property',
+			severity: 'warning',
+			line: 1,
+			column: 15,
+			endLine: 1,
+			endColumn: 29,
+			source: 'css-language-features',
+			evidence: 'confirmed-diagnostic',
+		},
+	);
+	assert.match(parts.prompt, /styles\.css:1:15/);
+	assert.match(parts.prompt, /provider: css-language-features/);
+	assert.match(parts.prompt, /What happened/);
+	assert.match(parts.prompt, /suggest, never apply/);
+});
+
 test('insight prompt asks for one grounded insight or NONE', () => {
 	const parts = buildInsightPrompt({ fileName: 'a.ts', languageId: 'typescript', text: 'code' });
 	assert.match(parts.prompt, /ONE concise insight/);
@@ -137,6 +159,25 @@ test('chat prompt bounds history and marks user question untrusted', () => {
 		{ fileName: 'a.ts', languageId: 'typescript', text: 'file body' },
 		undefined, 'q', []);
 	assert.match(noSel.prompt, /<file>\nfile body\n<\/file>/);
+});
+
+test('chat request keeps current user text separate from prior role history', () => {
+	const request = buildChatRequest(
+		doc,
+		undefined,
+		'What is a REST API?',
+		[{ role: 'user', text: 'Hello' }, { role: 'assistant', text: 'Hi!' }],
+		'framework: node',
+	);
+	assert.equal(request.messages.at(-1)?.role, 'user');
+	assert.equal(request.messages.at(-1)?.content, 'What is a REST API?');
+	assert.deepEqual(request.messages.slice(0, 2), [
+		{ role: 'user', content: 'Hello' },
+		{ role: 'assistant', content: 'Hi!' },
+	]);
+	assert.ok(!request.system.includes('Explain this typescript file'));
+	assert.match(request.system, /<project_context>/);
+	assert.match(request.system, /<file name="app\.ts"/);
 });
 
 test('orientation prompt is grounded only in observed facts', () => {

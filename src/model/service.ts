@@ -5,7 +5,7 @@ import type { GenerateOptions } from './ollama';
 import { declarationsOf, splitSections } from './sections';
 import {
 	buildAssessmentPrompt,
-	buildChatPrompt,
+	buildChatRequest,
 	buildDiagnosticPrompt,
 	buildInsightPrompt,
 	buildCombinePrompt,
@@ -111,7 +111,7 @@ export class ExplanationService {
 		private readonly client: OllamaClient,
 		private readonly cache: ExplanationCache<ExplanationResult>,
 		private readonly rulesExplain: (doc: DocLike) => FileExplanation | undefined,
-		private readonly isSupportedLang: (languageId: string) => boolean,
+		private readonly 		isSupportedLang: (languageId: string, fileName?: string) => boolean,
 		private readonly options: ServiceOptions,
 		private readonly logger?: ServiceLogger,
 	) {}
@@ -334,11 +334,11 @@ export class ExplanationService {
 		ui?: RequestUi,
 		projectContext?: string,
 	): Promise<ExplanationResult> {
-		const parts = buildChatPrompt(
+		const parts = buildChatRequest(
 			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
 			sel, question, history, projectContext,
 		);
-		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=chat bytes=${question.length}`, undefined, doc, this.capFor('chat'), ui);
+		return this.runChatInference(parts, `file=${baseName(doc.fileName)} mode=chat bytes=${question.length}`, doc, ui);
 	}
 
 	async assessAnswer(
@@ -359,7 +359,7 @@ export class ExplanationService {
 	}
 
 	private preflight(text: string, doc: DocLike): ExplanationResult | undefined {
-		if (!this.isSupportedLang(doc.languageId)) {
+		if (!this.isSupportedLang(doc.languageId, doc.fileName)) {
 			return { status: 'unsupported' };
 		}
 		if (text.trim().length === 0) {
@@ -416,6 +416,55 @@ export class ExplanationService {
 
 		if (key !== undefined && result.status === 'ok') {
 			this.cache.set(key, result);
+		}
+		return result;
+	}
+
+	private async runChatInference(
+		parts: { system: string; messages: Array<{ role: 'user' | 'assistant'; content: string }> },
+		logTag: string,
+		fallbackDoc: DocLike,
+		ui?: RequestUi,
+	): Promise<ExplanationResult> {
+		let result: ExplanationResult;
+		const startedAt = Date.now();
+		const elapsed = () => `${Date.now() - startedAt}ms`;
+		let firstTokenLogged = false;
+		const gen: GenerateOptions = {
+			numPredict: this.capFor('chat'),
+			keepAlive: '10m',
+			signal: ui?.signal,
+			onToken: ui?.onToken
+				? (text: string) => {
+					if (!firstTokenLogged) {
+						firstTokenLogged = true;
+						this.logger?.info(`chat first token: ${logTag} ttfb=${elapsed()}`);
+					}
+					ui.onToken!(text);
+				}
+				: undefined,
+		};
+		this.logger?.info(`chat request: ${logTag} model=${this.options.model} endpoint=${this.client.baseUrl} num_predict=${this.capFor('chat')}`);
+		try {
+			const raw = await this.client.chat(this.options.model, [
+				{ role: 'system', content: parts.system },
+				...parts.messages,
+			], gen);
+			const text = parseResponse(raw);
+			if (text.length === 0) {
+				result = this.errorResult(fallbackDoc, 'malformed', 'The model returned no chat response text (possibly reasoning-only output).');
+			} else {
+				this.logger?.info(`chat success: model=${this.options.model} ${logTag} status=200 duration=${elapsed()} chars=${text.length}`);
+				result = { status: 'ok', source: 'model', text, fromCache: false };
+			}
+		} catch (err) {
+			if (err instanceof OllamaError) {
+				this.logger?.info(`chat failed: kind=${err.kind}${err.status ? ` status=${err.status}` : ''} duration=${elapsed()} message=${err.message}`);
+				result = this.errorResult(fallbackDoc, err.kind, err.message);
+			} else {
+				this.logger?.info(`chat failed: kind=unavailable duration=${elapsed()} message=${(err as Error)?.message ?? String(err)}`);
+				result = this.errorResult(fallbackDoc, 'unavailable', `Unexpected error: ${(err as Error)?.message ?? String(err)}`);
+			}
 		}
 		return result;
 	}

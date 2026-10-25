@@ -129,6 +129,17 @@
 					"type": "boolean",
 					"default": true,
 					"description": "Allow Tancode to ask occasional knowledge-check questions."
+				},
+				"tancode.scan.excludeDirs": {
+					"type": "array",
+					"items": { "type": "string" },
+					"default": [],
+					"description": "Additional directory names to exclude from project scanning. Default generated/dependency directories remain excluded."
+				},
+				"tancode.scan.includeGenerated": {
+					"type": "boolean",
+					"default": false,
+					"description": "Include generated/dependency directories in project scanning. Binary files and .gitignored files remain excluded."
 				}
 			}
 		}

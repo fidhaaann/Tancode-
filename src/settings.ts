@@ -18,6 +18,8 @@ export interface TancodeSettings {
 	explanationDepth: ExplanationDepth;
 	simplifiedExplanations: boolean;
 	interactiveQuestions: boolean;
+	scanExcludeDirs: string[];
+	scanIncludeGenerated: boolean;
 }
 
 export function getSettings(): TancodeSettings {
@@ -36,5 +38,7 @@ export function getSettings(): TancodeSettings {
 		explanationDepth: cfg.get<ExplanationDepth>('explanation.depth', 'concise'),
 		simplifiedExplanations: cfg.get<boolean>('explanation.simplified', true),
 		interactiveQuestions: cfg.get<boolean>('explanation.interactiveQuestions', true),
+		scanExcludeDirs: cfg.get<string[]>('scan.excludeDirs', []),
+		scanIncludeGenerated: cfg.get<boolean>('scan.includeGenerated', false),
 	};
 }

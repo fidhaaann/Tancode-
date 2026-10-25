@@ -2,6 +2,31 @@
 
 Record each meaningful project change during the event, newest first. Update this file in the same commit as the change. Use a real timestamp with timezone, for example `YYYY-MM-DDTHH:MM:SS+05:30`.
 
+## 2026-10-25T08:20:00+05:30 — Add evidence-aware diagnostic mentoring
+
+- Root cause: diagnostic explanations did not consistently preserve VS Code's exact location/provider metadata, and chat had no separate path for error-focused questions.
+- Changed: workspace diagnostics now retain severity, message, code, source/provider, start and end ranges, with active-file priority. Diagnostic prompts label confirmed editor evidence separately from inferred causes and fixes, teach the underlying concept, and explicitly suggest changes without applying them.
+- Changed: error-related chat requests receive a compact diagnostic context block; requests with no current diagnostics are told to treat code concerns as potential rather than confirmed. Proactive diagnostic explanations remain a separate flow from user-initiated chat.
+- Tests: added evidence metadata and location-sensitive diagnostic coverage. `npm run typecheck` and `npm test` pass — 145/145.
+- Limitation: terminal output, runtime exceptions, debug-adapter events, and build/test results are not captured automatically; users can provide that evidence in chat.
+
+## 2026-10-25T07:58:55+05:30 — Expand project file scanning and analysis
+
+- Root cause: project orientation only peeked two directory levels, counted a small hard-coded extension map, and had no shared file registry or workspace-file retrieval path. Active-file analysis also rejected most valid VS Code language IDs.
+- Changed: added `src/fileTypes.ts` and `src/fileScanner.ts` with recursive discovery, extension and special-filename detection, hidden configuration support, `.gitignore` handling, binary rejection, default generated/dependency exclusions, scan outcomes, and non-active file lookup.
+- Changed: project facts now use the recursive inventory and report discovered/skipped/failed files; chat can retrieve a referenced in-workspace file such as CSS without requiring it to be open. Added configurable `tancode.scan.excludeDirs` and `tancode.scan.includeGenerated`.
+- Changed: expanded language support across web, configuration, programming, infrastructure, documentation, data, notebook, and contract formats; added CSS-family structural fallback for selectors, custom properties, imports, and media queries.
+- Tests: added registry/scanner coverage for CSS, nested monorepos, dotfiles, special filenames, binaries, ignored files, generated-directory configuration, and non-active reads. `npm run typecheck` and `npm test` pass — 144/144.
+- Limitation: `.gitignore` matching is intentionally conservative (literal directory/file patterns); VS Code `files.exclude`/`search.exclude` settings are not yet mirrored by the vscode-free scanner.
+
+## 2026-10-25T07:51:19+05:30 — Fix conversational chat routing
+
+- Root cause: user chat was sent through a generate-style prompt framed around the active file, and the current user turn was duplicated in the serialized history. That made unrelated requests look like file-explanation requests and weakened follow-up context.
+- Changed: added an Ollama `/api/chat` client path with real `system`/`user`/`assistant` roles for user-initiated chat; active-file, selection, and project facts are now separate untrusted workspace context and no longer override the user request. Existing `/api/generate` remains the separate path for file explanations, diagnostics, and proactive mentoring.
+- Changed: the panel excludes the just-submitted visible turn from prior history before sending it as the current user message. Streaming, cancellation, malformed responses, model errors, and local-only behavior remain supported.
+- Tests: added mocked `/api/chat` response/stream coverage and role/current-turn prompt assertions; updated service chat tests. `npm run compile`, `npm run typecheck`, and `npm test` pass — 141/141.
+- Limitation: live response quality still depends on the configured local Ollama model and was not exercised in a running Extension Development Host.
+
 ## 2026-10-24 — Remove file-size rejection + README rewrite (UTC)
 
 - Removed the arbitrary 64 KB file-size rejection (`tooLarge` state deleted): `tancode.maxSourceBytes` is now a prompt context budget — larger files go through sectioned analysis instead of being refused. Also removed the 512 KB rules-analysis cutoff and the oversized-selection rejection.

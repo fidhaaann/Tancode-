@@ -4,6 +4,8 @@
 // model explains them. Anything not established here stays unsaid.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { scanProjectFiles } from './fileScanner';
+import type { ScanOptions } from './fileScanner';
 
 export interface ProjectFacts {
 	root: string;
@@ -23,6 +25,13 @@ export interface ProjectFacts {
 	/** plausible entry points found (src/index.ts, main.py, …). */
 	entryCandidates: string[];
 	readmeExcerpt?: string;
+	/** Recursive supported-file inventory and honest scan outcomes. */
+	files?: {
+		discovered: number;
+		analyzed: number;
+		skipped: Array<{ path: string; reason: string }>;
+		failed: Array<{ path: string; reason: string }>;
+	};
 }
 
 const IGNORED_DIRS = new Set([
@@ -33,9 +42,9 @@ const IGNORED_DIRS = new Set([
 const LANGUAGE_BY_EXT: Record<string, string> = {
 	'.ts': 'typescript', '.tsx': 'typescript', '.js': 'javascript', '.jsx': 'javascript',
 	'.mjs': 'javascript', '.cjs': 'javascript', '.py': 'python', '.java': 'java',
-	'.go': 'go', '.rs': 'rust', '.rb': 'ruby', '.c': 'c', '.h': 'c/c++', '.cpp': 'c++',
+	'.go': 'go', '.rs': 'rust', '.rb': 'ruby', '.c': 'c', '.h': 'c', '.cpp': 'cpp',
 	'.cs': 'csharp', '.php': 'php', '.swift': 'swift', '.kt': 'kotlin',
-	'.html': 'html', '.css': 'css', '.scss': 'css', '.vue': 'vue', '.svelte': 'svelte',
+	'.html': 'html', '.css': 'css', '.scss': 'scss', '.vue': 'vue', '.svelte': 'svelte',
 };
 
 const CONFIG_FILES = [
@@ -53,14 +62,12 @@ const ENTRY_FILES = [
 ];
 
 const MAX_DIR_LIST = 40;
-const MAX_LANG_COUNT_FILES = 300;
 const MAX_README_CHARS = 600;
 
 // One-level deep: root entries, and for each top-level dir a peek inside to
 // count languages — still bounded and never recursive past depth 2.
 function scanLanguages(root: string, topDirs: string[]): Record<string, number> {
 	const langs: Record<string, number> = {};
-	let scanned = 0;
 	const bump = (file: string): void => {
 		const lang = LANGUAGE_BY_EXT[path.extname(file).toLowerCase()];
 		if (lang) {
@@ -69,31 +76,19 @@ function scanLanguages(root: string, topDirs: string[]): Record<string, number> 
 	};
 	try {
 		for (const e of fs.readdirSync(root, { withFileTypes: true })) {
-			if (e.isFile() && scanned < MAX_LANG_COUNT_FILES) {
+			if (e.isFile()) {
 				bump(e.name);
-				scanned++;
 			}
 		}
 		for (const dir of topDirs) {
-			if (scanned >= MAX_LANG_COUNT_FILES) {
-				break;
-			}
 			try {
 				for (const e of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
-					if (scanned >= MAX_LANG_COUNT_FILES) {
-						break;
-					}
 					if (e.isFile()) {
 						bump(e.name);
-						scanned++;
 					} else if (e.isDirectory() && !IGNORED_DIRS.has(e.name)) {
 						try {
 							for (const f of fs.readdirSync(path.join(root, dir, e.name))) {
-								if (scanned >= MAX_LANG_COUNT_FILES) {
-									break;
-								}
 								bump(f);
-								scanned++;
 							}
 						} catch { /* unreadable subdir — skip */ }
 					}
@@ -104,7 +99,7 @@ function scanLanguages(root: string, topDirs: string[]): Record<string, number> 
 	return langs;
 }
 
-export function collectProjectFacts(root: string): ProjectFacts {
+export function collectProjectFacts(root: string, scanOptions?: ScanOptions): ProjectFacts {
 	const facts: ProjectFacts = {
 		root,
 		name: path.basename(root),
@@ -164,7 +159,17 @@ export function collectProjectFacts(root: string): ProjectFacts {
 		} catch { /* unreadable */ }
 	}
 
-	facts.languages = scanLanguages(root, facts.directories);
+	const scan = scanProjectFiles(root, scanOptions);
+	facts.languages = {};
+	for (const file of scan.discovered) {
+		facts.languages[file.languageId] = (facts.languages[file.languageId] ?? 0) + 1;
+	}
+	facts.files = {
+		discovered: scan.discovered.length,
+		analyzed: scan.discovered.length,
+		skipped: scan.skipped.map(item => ({ path: item.relativePath, reason: item.reason })),
+		failed: scan.failed.map(item => ({ path: item.relativePath, reason: item.reason })),
+	};
 	return facts;
 }
 
@@ -197,6 +202,9 @@ export function formatFacts(f: ProjectFacts): string {
 	}
 	if (f.readmeExcerpt) {
 		lines.push(`README excerpt: ${f.readmeExcerpt}`);
+	}
+	if (f.files) {
+		lines.push(`Project scan: ${f.files.discovered} supported files discovered; ${f.files.skipped.length} skipped; ${f.files.failed.length} failed.`);
 	}
 	return lines.join('\n');
 }

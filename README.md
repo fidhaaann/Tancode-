@@ -8,7 +8,7 @@ All inference runs against a locally installed Ollama server. Nothing is uploade
 
 ## Features
 
-- **Chat-first coding mentor** — a conversational panel where Tancode can also speak first: it explains errors, offers learning insights, and answers follow-up questions with the current file/selection as context.
+- **Chat-first coding mentor** — a conversational panel where Tancode can also speak first: user questions, plans, code tasks, debugging requests, explanations, and follow-ups are sent as actual chat turns; current file/selection context is supporting evidence, not a forced explanation request.
 - **File explanations** — open a supported source file and get a concise, educational explanation of what it does.
 - **Selected-code context** — select code and run *Tancode: Explain Selected Code* for an explanation, a structured Learn breakdown, or a "Test My Understanding" quiz.
 - **Proactive learning insights** — event-driven notes on meaningful saves, new diagnostics, and opened project manifests; debounced, deduplicated, cooldown-gated, and pausable.
@@ -17,8 +17,9 @@ All inference runs against a locally installed Ollama server. Nothing is uploade
 - **Project version awareness** — a local tech profile distinguishes **declared** manifest ranges, **resolved** lockfile versions, and **detected runtime** versions. Opening a manifest posts one grounded note.
 - **Technical + simplified explanations** — substantial answers teach WHAT → HOW → WHY, plus a plain-language version and a real-world analogy when enabled.
 - **Large-file analysis** — files larger than the configured prompt budget are analyzed in sequential sections (declaration-aware splitting, rolling summaries, cross-section symbol carry-over) and combined with honest scope disclosure — never silently truncated or rejected.
-- **Streaming + cancellation** — responses stream token-by-token; switching context or pressing Stop aborts in-flight requests.
+- **Streaming + cancellation** — responses stream token-by-token; switching context or pressing Stop aborts in-flight requests. User chat uses Ollama `/api/chat` roles, while explanations and proactive mentoring remain separate `/api/generate` flows.
 - **Privacy** — local Ollama only, no cloud AI, no telemetry, no automatic code edits, secret-looking config values redacted before prompts.
+- **Broad project scanning** — one shared registry recognizes web files (including CSS/SCSS, HTML, JSX/TSX, Vue, Svelte, Astro), programming languages, JSON/YAML/TOML/XML/INI, Docker and build files, Terraform/HCL, Markdown/docs, CSV/TSV, Protocol Buffers, notebooks, lockfiles, and useful hidden dotfiles.
 
 ## Architecture
 
@@ -140,6 +141,7 @@ All settings live under the `tancode.*` prefix (Settings → search "tancode").
 - *Explain selected code:* select a function → right-click → **Tancode: Explain Selected Code** → read it, then press **Learn** for a structured breakdown or **Test My Understanding** for a quiz.
 - *Ask a follow-up:* in the chat box, "why does this use `useEffect` here?" — answers use the pinned file/selection plus recent conversation.
 - *Understand an error:* write code that produces a diagnostic — a tagged error note appears automatically explaining meaning, likely cause, and how to verify a fix.
+- *Ask about an error:* ask "why am I getting this?" or "how do I fix this warning?" — current VS Code error/warning diagnostics are included with their file, range, code, severity, and provider. Confirmed editor evidence is kept distinct from model hypotheses.
 - *Explain a JSON config:* open `tsconfig.json` — get an explanation plus a proactive note grounded in the extracted compiler settings.
 - *Check dependency versions:* open `package.json` and ask "what TypeScript version does this project need?" — Tancode answers with the declared range vs lockfile-resolved version, never a guessed install.
 - *Plain-language explanation:* ask "explain this like I'm a beginner" — technical + simplified explanations are on by default.
@@ -161,6 +163,7 @@ All settings live under the `tancode.*` prefix (Settings → search "tancode").
 | Blank webview | EDH Developer Tools → Console errors; also `Tancode: Clear Conversation`. |
 | Large file is slow | Expected — sections run sequentially against a local model; raise `maxSourceBytes` for fewer sections if your model's context allows. |
 | JSON flagged invalid | Look at VS Code diagnostics first — Tancode reports the editor's parse errors rather than re-guessing validity. |
+| Error explanation lacks runtime output | Tancode can ground explanations in VS Code diagnostics, build/test evidence supplied in context, and project files. It does not automatically read arbitrary terminal output or execute commands. Paste runtime output into chat when needed; model suggestions are never applied automatically. |
 
 ## Development and testing
 
@@ -172,7 +175,15 @@ npm run watch        # incremental compile
 npm test             # node --test out/test/*.test.js (pretest recompiles)
 ```
 
-`scripts/preflight.js` runs before compile/typecheck/watch to check the toolchain. The test suite (138 tests) covers prompts, parsing, caching, failure paths, the JSONC parser, tech-profile extraction, sectioning, message dispatch, and the view render — all with Ollama mocked; no model download is needed to run them.
+`scripts/preflight.js` runs before compile/typecheck/watch to check the toolchain. The test suite (145 tests) covers prompts, diagnostic evidence metadata, chat role construction, Ollama response/stream parsing, caching, failure paths, the JSONC parser, tech-profile extraction, sectioning, message dispatch, scanning, and the view render — all with Ollama mocked; no model download is needed to run them.
+
+### Project scanning and file context
+
+Project orientation scans recursively using the registry in [`src/fileTypes.ts`](./src/fileTypes.ts) and [`src/fileScanner.ts`](./src/fileScanner.ts). It recognizes extensionless files such as `Dockerfile`, `Makefile`, `CMakeLists.txt`, `Jenkinsfile`, `Procfile`, and `Justfile`, plus relevant hidden files such as `.env.example`, `.editorconfig`, `.npmrc`, and `.prettierrc`. Binary files are rejected before reading, `.gitignore` entries are respected, and dependency/generated directories (`node_modules`, `.git`, `dist`, `out`, `build`, `coverage`, virtual environments, and similar) are excluded by default.
+
+Set `tancode.scan.excludeDirs` to add directory names to the default exclusions, or set `tancode.scan.includeGenerated` to include those directories (binary and `.gitignore` exclusions still apply). Scan facts report discovered, skipped, and failed files. Chat can retrieve a referenced supported file from the workspace even when it is not the active editor, for example “Explain `styles/app.css`”; only that relevant file is added to context.
+
+Supported files are read as text without executing scripts or notebook cells. Large files remain discoverable and are handled by the existing sectioned model path when explicitly explained. Specialized rule-based summaries exist for JSON/JSONC and CSS-family files; other supported formats use safe generic structural analysis plus the model when available.
 
 ## Privacy and safety
 

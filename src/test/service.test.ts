@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ExplanationCache } from '../model/cache';
-import { OllamaClient, OllamaError } from '../model/ollama';
+import { ChatMessage, OllamaClient, OllamaError } from '../model/ollama';
 import { DocLike, ExplanationResult, ExplanationService, ServiceOptions } from '../model/service';
 import type { GenerateOptions } from '../model/ollama';
 
@@ -22,6 +22,7 @@ function makeService(
 ) {
 	const fallbackToRules = typeof extra === 'boolean' ? extra : extra.fallbackToRules !== false;
 	const calls: string[] = [];
+	const chatCalls: ChatMessage[][] = [];
 	const genOpts: (GenerateOptions | undefined)[] = [];
 	const logs: string[] = [];
 	const client = new OllamaClient('http://127.0.0.1:11434', 5000, async () => {
@@ -32,6 +33,11 @@ function makeService(
 		genOpts.push(opts);
 		return generate(model, sys, prompt, opts);
 	};
+	client.chat = async (model, messages, opts) => {
+		chatCalls.push(messages);
+		genOpts.push(opts);
+		return generate(model, messages.find(m => m.role === 'system')?.content ?? '', messages.at(-1)?.content ?? '', opts);
+	};
 	const service = new ExplanationService(
 		client,
 		new ExplanationCache<ExplanationResult>(),
@@ -40,7 +46,7 @@ function makeService(
 		{ model: 'm1', maxSourceBytes: 1024, fallbackToRules, ...(typeof extra === 'object' ? extra : {}) },
 		{ info: m => logs.push(m) },
 	);
-	return { service, calls, genOpts, logs };
+	return { service, calls, chatCalls, genOpts, logs };
 }
 
 test('returns model text for a supported non-empty file', async () => {
@@ -313,14 +319,17 @@ test('findInsight returns model text and caches by content hash', async () => {
 });
 
 test('chatAnswer sends question + history, never caches', async () => {
-	const { service, calls, genOpts } = makeService(async () => 'It maps inputs.');
+	const { service, chatCalls, genOpts } = makeService(async () => 'It maps inputs.');
 	const sel = { startLine: 1, endLine: 1, text: 'x' };
 	await service.chatAnswer(doc(), sel, 'what does this do', [{ role: 'user', text: 'earlier' }]);
-	assert.match(calls[0], /<user_question>\nwhat does this do/);
-	assert.match(calls[0], /<history>/);
+	assert.deepEqual(chatCalls[0]?.slice(-2), [
+		{ role: 'user', content: 'earlier' },
+		{ role: 'user', content: 'what does this do' },
+	]);
+	assert.equal(chatCalls[0]?.[0]?.role, 'system');
 	assert.equal(genOpts[0]?.numPredict, 300);
 	await service.chatAnswer(doc(), sel, 'what does this do', []);
-	assert.equal(calls.length, 2, 'chat is never cached');
+	assert.equal(chatCalls.length, 2, 'chat is never cached');
 });
 
 test('explainDiagnostic caches by diag key and carries num_predict=400', async () => {

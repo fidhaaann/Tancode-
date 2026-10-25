@@ -17,12 +17,17 @@ export interface DiagLike {
 	severity: number; // vscode.DiagnosticSeverity: 0=Error,1=Warning,2=Info,3=Hint
 	message: string;
 	line: number;
+	column?: number;
+	endLine?: number;
+	endColumn?: number;
+	source?: string;
 	code?: string | number;
+	evidence?: 'confirmed-diagnostic' | 'observed-runtime' | 'build-test' | 'potential' | 'unknown';
 }
 
 export function diagKey(uri: string, d: DiagLike): string {
 	const code = d.code === undefined || d.code === '' ? '' : String(d.code);
-	return hashContent(`diag|${uri}|${d.line}|${code}|${d.message}`);
+	return hashContent(`diag|${uri}|${d.line}|${d.column ?? 0}|${d.endLine ?? d.line}|${d.endColumn ?? 0}|${d.source ?? ''}|${code}|${d.message}`);
 }
 
 // Pick the single most useful diagnostic to explain: errors first, then
