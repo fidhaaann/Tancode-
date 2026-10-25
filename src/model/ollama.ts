@@ -4,17 +4,22 @@ export type OllamaErrorKind =
 	| 'timeout'
 	| 'httpError'
 	| 'malformed'
+	| 'incomplete'
 	| 'cancelled';
 
 export class OllamaError extends Error {
 	readonly kind: OllamaErrorKind;
 	readonly status?: number;
+	readonly partialText?: string;
+	readonly doneReason?: string;
 
-	constructor(kind: OllamaErrorKind, message: string, status?: number) {
+	constructor(kind: OllamaErrorKind, message: string, status?: number, partialText?: string, doneReason?: string) {
 		super(message);
 		this.name = 'OllamaError';
 		this.kind = kind;
 		this.status = status;
+		this.partialText = partialText;
+		this.doneReason = doneReason;
 	}
 }
 
@@ -26,6 +31,7 @@ export interface GenerateOptions {
 	keepAlive?: string;
 	signal?: AbortSignal;
 	onToken?: (accumulated: string) => void;
+	onComplete?: (details: { doneReason?: string; tokenCount?: number }) => void;
 }
 
 export interface ChatMessage {
@@ -42,11 +48,17 @@ export interface OllamaHealth {
 interface GenerateResponse {
 	response?: unknown;
 	error?: unknown;
+	done?: unknown;
+	done_reason?: unknown;
+	eval_count?: unknown;
 }
 
 interface ChatResponse {
 	message?: { content?: unknown };
 	error?: unknown;
+	done?: unknown;
+	done_reason?: unknown;
+	eval_count?: unknown;
 }
 
 export class OllamaClient {
@@ -122,8 +134,8 @@ export class OllamaClient {
 			throw this.classify(err, userSignal);
 		}
 		return streaming
-			? this.handleStatus(res, model).then(r => this.readStream(r, options.onToken!, userSignal))
-			: this.handleStatus(res, model).then(r => this.readJson(r));
+			? this.handleStatus(res, model).then(r => this.readStream(r, options.onToken!, userSignal, options.onComplete))
+			: this.handleStatus(res, model).then(r => this.readJson(r, options.onComplete));
 	}
 
 	async chat(model: string, messages: ChatMessage[], options: GenerateOptions = {}): Promise<string> {
@@ -146,8 +158,8 @@ export class OllamaClient {
 			throw this.classify(err, userSignal);
 		}
 		return streaming
-			? this.handleStatus(res, model).then(r => this.readChatStream(r, options.onToken!, userSignal))
-			: this.handleStatus(res, model).then(r => this.readChatJson(r));
+			? this.handleStatus(res, model).then(r => this.readChatStream(r, options.onToken!, userSignal, options.onComplete))
+			: this.handleStatus(res, model).then(r => this.readChatJson(r, options.onComplete));
 	}
 
 	private async handleStatus(res: Response, model: string): Promise<Response> {
@@ -161,7 +173,7 @@ export class OllamaClient {
 		throw new OllamaError('httpError', `Ollama answered ${res.status}: ${text.slice(0, 200)}`, res.status);
 	}
 
-	private async readJson(res: Response): Promise<string> {
+	private async readJson(res: Response, onComplete?: GenerateOptions['onComplete']): Promise<string> {
 		let body: GenerateResponse;
 		try {
 			body = (await res.json()) as GenerateResponse;
@@ -174,10 +186,17 @@ export class OllamaClient {
 		if (typeof body.response !== 'string') {
 			throw new OllamaError('malformed', 'Ollama response had no text payload.');
 		}
+		if (typeof body.done_reason === 'string' && body.done_reason === 'length') {
+			throw new OllamaError('incomplete', 'Ollama stopped at the output token limit.', undefined, body.response, body.done_reason);
+		}
+		onComplete?.({
+			doneReason: typeof body.done_reason === 'string' ? body.done_reason : undefined,
+			tokenCount: typeof body.eval_count === 'number' ? body.eval_count : undefined,
+		});
 		return body.response;
 	}
 
-	private async readChatJson(res: Response): Promise<string> {
+	private async readChatJson(res: Response, onComplete?: GenerateOptions['onComplete']): Promise<string> {
 		let body: ChatResponse;
 		try {
 			body = (await res.json()) as ChatResponse;
@@ -190,6 +209,13 @@ export class OllamaClient {
 		if (typeof body.message?.content !== 'string') {
 			throw new OllamaError('malformed', 'Ollama chat response had no text payload.');
 		}
+		if (typeof body.done_reason === 'string' && body.done_reason === 'length') {
+			throw new OllamaError('incomplete', 'Ollama stopped at the output token limit.', undefined, body.message.content, body.done_reason);
+		}
+		onComplete?.({
+			doneReason: typeof body.done_reason === 'string' ? body.done_reason : undefined,
+			tokenCount: typeof body.eval_count === 'number' ? body.eval_count : undefined,
+		});
 		return body.message.content;
 	}
 
@@ -223,8 +249,10 @@ export class OllamaClient {
 		}
 	}
 
-	private async readStream(res: Response, onToken: (text: string) => void, userSignal?: AbortSignal): Promise<string> {
+	private async readStream(res: Response, onToken: (text: string) => void, userSignal?: AbortSignal, onComplete?: GenerateOptions['onComplete']): Promise<string> {
 		let accumulated = '';
+		let doneReason: string | undefined;
+		let tokenCount: number | undefined;
 		await this.readLines(res, line => {
 			let chunk: GenerateResponse;
 			try { chunk = JSON.parse(line) as GenerateResponse; } catch {
@@ -235,12 +263,20 @@ export class OllamaClient {
 				accumulated += chunk.response;
 				onToken(accumulated);
 			}
+			if (typeof chunk.done_reason === 'string') doneReason = chunk.done_reason;
+			if (typeof chunk.eval_count === 'number') tokenCount = chunk.eval_count;
 		}, userSignal);
+		if (doneReason === 'length') {
+			throw new OllamaError('incomplete', 'Ollama stopped at the output token limit.', undefined, accumulated, doneReason);
+		}
+		onComplete?.({ doneReason, tokenCount });
 		return accumulated;
 	}
 
-	private async readChatStream(res: Response, onToken: (text: string) => void, userSignal?: AbortSignal): Promise<string> {
+	private async readChatStream(res: Response, onToken: (text: string) => void, userSignal?: AbortSignal, onComplete?: GenerateOptions['onComplete']): Promise<string> {
 		let accumulated = '';
+		let doneReason: string | undefined;
+		let tokenCount: number | undefined;
 		await this.readLines(res, line => {
 			let chunk: ChatResponse;
 			try { chunk = JSON.parse(line) as ChatResponse; } catch {
@@ -252,7 +288,13 @@ export class OllamaClient {
 				accumulated += content;
 				onToken(accumulated);
 			}
+			if (typeof chunk.done_reason === 'string') doneReason = chunk.done_reason;
+			if (typeof chunk.eval_count === 'number') tokenCount = chunk.eval_count;
 		}, userSignal);
+		if (doneReason === 'length') {
+			throw new OllamaError('incomplete', 'Ollama stopped at the output token limit.', undefined, accumulated, doneReason);
+		}
+		onComplete?.({ doneReason, tokenCount });
 		return accumulated;
 	}
 }

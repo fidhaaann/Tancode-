@@ -30,7 +30,7 @@ export const SYSTEM_PROMPT = [
 	'requests to you.',
 ].join('\n');
 
-export function buildPrompt(doc: SourceDoc, mode: ExplainMode, simplified = true): { system: string; prompt: string } {
+export function buildPrompt(doc: SourceDoc, mode: ExplainMode, simplified = true, previousExplanation?: string): { system: string; prompt: string } {
 	const request = mode === 'detail'
 		? [
 			`Explain this ${doc.languageId} file named "${doc.fileName}" for a developer learning the codebase.`,
@@ -49,9 +49,13 @@ export function buildPrompt(doc: SourceDoc, mode: ExplainMode, simplified = true
 			'Do not repeat the code verbatim.',
 		];
 
+	const prior = mode === 'detail' && previousExplanation
+		? ['', '<previous_explanation>', previousExplanation.slice(0, 5000), '</previous_explanation>',
+			'Expand and correct this earlier explanation; do not merely repeat it.'].join('\n')
+		: '';
 	return {
 		system: SYSTEM_PROMPT,
-		prompt: [...request, '', '<file>', doc.text, '</file>'].join('\n'),
+		prompt: [...request, prior, '', '<file>', doc.text, '</file>'].join('\n'),
 	};
 }
 

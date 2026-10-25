@@ -259,13 +259,13 @@ test('per-mode num_predict limits keep routine answers short', async () => {
 	const { service, genOpts } = makeService(async () => 'ok');
 	const sel2 = { startLine: 1, endLine: 1, text: 'const a = 1;', before: undefined, after: undefined };
 	await service.explain(doc(), 'summary');
-	assert.equal(genOpts[0]?.numPredict, 200);
+	assert.equal(genOpts[0]?.numPredict, 600);
 	await service.explain(doc(), 'detail');
-	assert.equal(genOpts[1]?.numPredict, 500);
+	assert.equal(genOpts[1]?.numPredict, 1000);
 	await service.explainSelection(doc(), sel2, 'explain');
-	assert.equal(genOpts[2]?.numPredict, 300);
+	assert.equal(genOpts[2]?.numPredict, 700);
 	await service.explainSelection(doc(), sel2, 'learn');
-	assert.equal(genOpts[3]?.numPredict, 500);
+	assert.equal(genOpts[3]?.numPredict, 1000);
 	await service.generateQuestion(doc(), sel2);
 	assert.equal(genOpts[4]?.numPredict, 180);
 	await service.assessAnswer(doc(), sel2, 'q?', 'a');
@@ -294,7 +294,7 @@ test('cache hits and in-flight dedupe are logged for performance diagnostics', a
 	await service.explain(doc(), 'summary');
 	assert.equal(calls.length, 1);
 	assert.ok(logs.some(l => l.includes('explain cache hit')), 'cache hit is logged');
-	assert.ok(logs.some(l => l.includes('num_predict=200')), 'output cap is logged per request');
+	assert.ok(logs.some(l => l.includes('num_predict=600')), 'output cap is logged per request');
 });
 
 test('a cancelled request surfaces as an error result, not a crash', async () => {
@@ -327,7 +327,7 @@ test('chatAnswer sends question + history, never caches', async () => {
 		{ role: 'user', content: 'what does this do' },
 	]);
 	assert.equal(chatCalls[0]?.[0]?.role, 'system');
-	assert.equal(genOpts[0]?.numPredict, 300);
+	assert.equal(genOpts[0]?.numPredict, 800);
 	await service.chatAnswer(doc(), sel, 'what does this do', []);
 	assert.equal(chatCalls.length, 2, 'chat is never cached');
 });
@@ -339,7 +339,7 @@ test('explainDiagnostic caches by diag key and carries num_predict=400', async (
 	await service.explainDiagnostic(doc(), sel, diag, 'diag:k1');
 	await service.explainDiagnostic(doc(), sel, diag, 'diag:k1');
 	assert.equal(calls.length, 1);
-	assert.equal(genOpts[0]?.numPredict, 400);
+	assert.equal(genOpts[0]?.numPredict, 800);
 });
 
 test('projectOrientation caches by facts hash and caps output', async () => {
@@ -362,7 +362,7 @@ test('sessionRecap is never cached', async () => {
 test('detailed depth scales output budgets ~1.5x', async () => {
 	const { service, genOpts } = makeService(async () => 'x', { depth: 'detailed' }); // eslint-disable-line
 	await service.explain(doc(), 'summary');
-	assert.equal(genOpts[0]?.numPredict, 300, 'summary 200 * 1.5');
+	assert.equal(genOpts[0]?.numPredict, 900, 'summary 600 * 1.5');
 });
 
 test('manifestInsight returns model text and caches by caller key', async () => {

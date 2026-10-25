@@ -136,6 +136,7 @@ export class ExplanationPanel {
 	private contextFileUri: string | undefined;
 	private pinnedDoc: vscode.TextDocument | undefined;
 	private contextNoteSeen = new Set<string>();
+	private lastExplanationText: string | undefined;
 
 	// `Tancode: Clear Conversation` command path — no-op when no panel exists.
 	static clearChat(): void {
@@ -391,6 +392,8 @@ export class ExplanationPanel {
 				maxSourceBytes: this.settings.maxSourceBytes,
 				fallbackToRules: this.settings.fallbackToRules,
 				depth: this.settings.explanationDepth,
+				maxOutputTokens: this.settings.maxOutputTokens,
+				detailedOutputTokens: this.settings.detailedOutputTokens,
 				simplified: this.settings.simplifiedExplanations,
 			},
 			log,
@@ -473,6 +476,9 @@ export class ExplanationPanel {
 			return;
 		}
 		this.lastKey = key;
+		if (this.contextFileUri !== document.uri.toString()) {
+			this.lastExplanationText = undefined;
+		}
 		this.contextFileUri = document.uri.toString();
 		this.pinnedDoc = document;
 		this.retryTarget = 'explanation';
@@ -522,7 +528,11 @@ export class ExplanationPanel {
 		let result: ExplanationResult;
 		this.beginInflight();
 		try {
-			result = await this.service.explain(document, this.fileMode, force, { signal: abort.signal, onToken });
+			result = await this.service.explain(document, this.fileMode, force, {
+				signal: abort.signal,
+				onToken,
+				previousText: this.fileMode === 'detail' ? this.lastExplanationText : undefined,
+			});
 		} finally {
 			this.endInflight();
 		}
@@ -531,6 +541,9 @@ export class ExplanationPanel {
 		}
 
 		this.renderResult(result, { fileName, languageName, target: 'file', mode: this.fileMode });
+		if (result.status === 'ok' && result.source === 'model') {
+			this.lastExplanationText = result.text;
+		}
 		this.maybeOrientation();
 		this.maybeManifestInsight(document);
 	}

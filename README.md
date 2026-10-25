@@ -19,6 +19,7 @@ All inference runs against a locally installed Ollama server. Nothing is uploade
 - **Technical + simplified explanations** — substantial answers teach WHAT → HOW → WHY, plus a plain-language version and a real-world analogy when enabled.
 - **Large-file analysis** — files larger than the configured prompt budget are analyzed in sequential sections (declaration-aware splitting, rolling summaries, cross-section symbol carry-over) and combined with honest scope disclosure — never silently truncated or rejected.
 - **Streaming + cancellation** — responses stream token-by-token; switching context or pressing Stop aborts in-flight requests. User chat uses Ollama `/api/chat` roles, while explanations and proactive mentoring remain separate `/api/generate` flows.
+- **Complete-answer safeguards** — generation budgets are configurable, Ollama `done_reason` is inspected, and token-limit termination is shown as an incomplete explanation with Retry/Detailed actions rather than silently presented as finished.
 - **Privacy** — local Ollama only, no cloud AI, no telemetry, no automatic code edits, secret-looking config values redacted before prompts.
 - **Broad project scanning** — one shared registry recognizes web files (including CSS/SCSS, HTML, JSX/TSX, Vue, Svelte, Astro), programming languages, JSON/YAML/TOML/XML/INI, Docker and build files, Terraform/HCL, Markdown/docs, CSV/TSV, Protocol Buffers, notebooks, lockfiles, and useful hidden dotfiles.
 
@@ -127,6 +128,8 @@ All settings live under the `tancode.*` prefix (Settings → search "tancode").
 | `tancode.ollama.model` | `qwen3:8b` | Model tag; must already be installed (`ollama list`). |
 | `tancode.maxSourceBytes` | `65536` | Prompt context budget in characters — larger files are analyzed in sections, not rejected. |
 | `tancode.requestTimeoutMs` | `120000` | Per-request timeout (non-streamed generation must finish within it). |
+| `tancode.generation.maxOutputTokens` | `1000` | Maximum tokens for concise explanations and chat. |
+| `tancode.generation.detailedOutputTokens` | `1800` | Maximum tokens for detailed explanations. |
 | `tancode.fallbackToRuleBased` | `true` | Show a clearly-labelled deterministic explanation when the model fails. |
 | `tancode.proactive.enabled` | `true` | Let Tancode proactively explain errors and insights. |
 | `tancode.proactive.level` | `all` | `all` = errors + insights; `errors-only` = diagnostics only. |
@@ -159,7 +162,8 @@ All settings live under the `tancode.*` prefix (Settings → search "tancode").
 | Command missing in palette | You're in the normal window, not the `[Extension Development Host]` window — or `out/` is stale: recompile and fully restart the EDH. |
 | Connection refused | `curl http://127.0.0.1:11434/api/tags` — start Ollama (`ollama serve`) or fix `tancode.ollama.baseUrl`. |
 | Model not found | `ollama list` — point `tancode.ollama.model` at an installed tag. |
-| Slow Qwen responses | Check `duration=`/`ttfb=` in Output → Tancode; use a smaller model; `explanation.depth: concise` is the fast default. |
+| Slow Qwen responses | Check `duration=`/`ttfb=` and completion metadata in Output → Tancode; use a smaller model; `explanation.depth: concise` is the fast default. |
+| Incomplete answer | Tancode reports when Ollama stopped with `done_reason=length`. Retry the request, choose Detailed Answer, or raise the relevant `tancode.generation.*` setting. |
 | "Rule-based fallback" badge | The model request failed — the Output → Tancode line gives `kind=` and a hint. The label is honest, not hidden. |
 | Blank webview | EDH Developer Tools → Console errors; also `Tancode: Clear Conversation`. |
 | Large file is slow | Expected — sections run sequentially against a local model; raise `maxSourceBytes` for fewer sections if your model's context allows. |
@@ -176,11 +180,19 @@ npm run watch        # incremental compile
 npm test             # node --test out/test/*.test.js (pretest recompiles)
 ```
 
-`scripts/preflight.js` runs before compile/typecheck/watch to check the toolchain. The test suite (147 tests) covers prompts, diagnostic evidence metadata, terminal capture formatting, chat role construction, Ollama response/stream parsing, caching, failure paths, the JSONC parser, tech-profile extraction, sectioning, message dispatch, scanning, and the view render — all with Ollama mocked; no model download is needed to run them.
+`scripts/preflight.js` runs before compile/typecheck/watch to check the toolchain. The test suite (148 tests) covers prompts, diagnostic evidence metadata, terminal capture formatting, output-limit completion handling, chat role construction, Ollama response/stream parsing, caching, failure paths, the JSONC parser, tech-profile extraction, sectioning, message dispatch, scanning, and the view render — all with Ollama mocked; no model download is needed to run them.
 
 ### Project scanning and file context
 
 Project orientation scans recursively using the registry in [`src/fileTypes.ts`](./src/fileTypes.ts) and [`src/fileScanner.ts`](./src/fileScanner.ts). It recognizes extensionless files such as `Dockerfile`, `Makefile`, `CMakeLists.txt`, `Jenkinsfile`, `Procfile`, and `Justfile`, plus relevant hidden files such as `.env.example`, `.editorconfig`, `.npmrc`, and `.prettierrc`. Binary files are rejected before reading, `.gitignore` entries are respected, and dependency/generated directories (`node_modules`, `.git`, `dist`, `out`, `build`, `coverage`, virtual environments, and similar) are excluded by default.
+
+### Installed Ollama model verification
+
+- Start Ollama and confirm the configured model appears in `ollama list`.
+- Open a representative source file and verify the Output → Tancode log records `ttfb`, duration, `done_reason`, and token count without source text.
+- Ask for a normal explanation, then choose **Explain in more detail** and confirm the second request has a larger `num_predict` budget and expands the prior explanation.
+- Use a response long enough to reach the configured limit and confirm Tancode shows an incomplete-generation error with Retry guidance rather than a falsely completed answer.
+- Press Stop during streaming and confirm the partial response is not presented as a completed answer.
 
 Set `tancode.scan.excludeDirs` to add directory names to the default exclusions, or set `tancode.scan.includeGenerated` to include those directories (binary and `.gitignore` exclusions still apply). Scan facts report discovered, skipped, and failed files. Chat can retrieve a referenced supported file from the workspace even when it is not the active editor, for example “Explain `styles/app.css`”; only that relevant file is added to context.
 

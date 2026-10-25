@@ -9,6 +9,8 @@ export interface TancodeSettings {
 	ollamaModel: string;
 	maxSourceBytes: number;
 	requestTimeoutMs: number;
+	maxOutputTokens: number;
+	detailedOutputTokens: number;
 	fallbackToRules: boolean;
 	proactiveEnabled: boolean;
 	proactiveLevel: ProactiveLevel;
@@ -29,6 +31,8 @@ export function getSettings(): TancodeSettings {
 		ollamaModel: cfg.get<string>('ollama.model', 'qwen3:8b'),
 		maxSourceBytes: cfg.get<number>('maxSourceBytes', 65536),
 		requestTimeoutMs: cfg.get<number>('requestTimeoutMs', 120000),
+		maxOutputTokens: cfg.get<number>('generation.maxOutputTokens', 1000),
+		detailedOutputTokens: cfg.get<number>('generation.detailedOutputTokens', 1800),
 		fallbackToRules: cfg.get<boolean>('fallbackToRuleBased', true),
 		proactiveEnabled: cfg.get<boolean>('proactive.enabled', true),
 		proactiveLevel: cfg.get<ProactiveLevel>('proactive.level', 'all'),

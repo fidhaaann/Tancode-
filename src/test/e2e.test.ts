@@ -85,7 +85,7 @@ test('e2e: POST /api/generate carries model, prompt and stream:false', async () 
 		assert.equal(captured[0].body.stream, false);
 		assert.equal(captured[0].body.think, false, 'thinking disabled for faster replies');
 		assert.equal(captured[0].body.keep_alive, '10m', 'model stays warm between requests');
-		assert.equal(captured[0].body.options?.num_predict, 200, 'summary caps output length');
+		assert.equal(captured[0].body.options?.num_predict, 600, 'summary uses a complete-answer output budget');
 		assert.match(captured[0].body.prompt ?? '', /export function main/);
 		assert.equal(typeof captured[0].body.system, 'string');
 	});

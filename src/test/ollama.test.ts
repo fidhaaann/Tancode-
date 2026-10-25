@@ -153,9 +153,25 @@ test('streaming generate accumulates chunks and fires onToken', async () => {
 			'{"response":"","done":true}\n',
 		]);
 	});
+
 	const text = await client.generate('m1', 's', 'p', { onToken: t => chunks.push(t) });
 	assert.equal(text, 'Hello world');
 	assert.deepEqual(chunks, ['Hello ', 'Hello world']);
+});
+
+test('streaming generate reports token-limit termination as incomplete', async () => {
+	const client = new OllamaClient(BASE, 5000, async () =>
+		streamRes([
+			'{"response":"unfinished","done":false}\n',
+			'{"response":"","done":true,"done_reason":"length","eval_count":600}\n',
+		]));
+	await assert.rejects(
+		client.generate('m1', 's', 'p', { onToken: () => undefined }),
+		(err: unknown) => err instanceof OllamaError
+			&& err.kind === 'incomplete'
+			&& err.doneReason === 'length'
+			&& err.partialText === 'unfinished',
+	);
 });
 
 test('stream chunks split across network boundaries are reassembled', async () => {

@@ -40,6 +40,8 @@ export interface ServiceOptions {
 	fallbackToRules: boolean;
 	/** detailed → ~1.5x output budgets; concise → the base caps. */
 	depth?: 'concise' | 'detailed';
+	maxOutputTokens?: number;
+	detailedOutputTokens?: number;
 	/** include plain-language explanations + analogies in teaching modes. */
 	simplified?: boolean;
 }
@@ -63,6 +65,8 @@ export function hintFor(kind: OllamaErrorKind, model: string, baseUrl: string): 
 			return 'Check that Ollama is healthy ("ollama list") and that the base URL points at the Ollama API port.';
 		case 'malformed':
 			return 'The endpoint answered but not as an Ollama server. Check the "tancode.ollama.baseUrl" setting.';
+		case 'incomplete':
+			return 'The model reached its output limit before finishing. Retry, switch to Detailed Answer, or increase the generation token setting.';
 		case 'cancelled':
 			return 'A newer update replaced this request. Nothing is wrong — retry if this was unexpected.';
 	}
@@ -72,18 +76,18 @@ export function hintFor(kind: OllamaErrorKind, model: string, baseUrl: string): 
 // generation time scales almost linearly with output length on a local
 // model, so an unbounded default wastes seconds on padded answers.
 const NUM_PREDICT: Record<string, number> = {
-	summary: 200,
-	detail: 500,
-	'sel-explain': 300,
-	'sel-learn': 500,
+	summary: 600,
+	detail: 1200,
+	'sel-explain': 700,
+	'sel-learn': 1100,
 	question: 180,
 	assess: 500,
-	chat: 300,
+	chat: 800,
 	insight: 150,
-	diagnostic: 400,
+	diagnostic: 800,
 	orientation: 350,
 	recap: 600,
-	section: 250,
+	section: 500,
 };
 
 // Optional streaming/cancellation channel from the panel. `signal` aborts
@@ -92,6 +96,7 @@ const NUM_PREDICT: Record<string, number> = {
 export interface RequestUi {
 	signal?: AbortSignal;
 	onToken?: (accumulated: string) => void;
+	previousText?: string;
 }
 
 // Optional logger — receives operational metadata only (URIs never logged,
@@ -120,7 +125,10 @@ export class ExplanationService {
 	// the latency-tuned caps.
 	private capFor(mode: string): number {
 		const base = NUM_PREDICT[mode] ?? 300;
-		return this.options.depth === 'detailed' ? Math.round(base * 1.5) : base;
+		const depthCap = this.options.depth === 'detailed'
+			? this.options.detailedOutputTokens ?? 1800
+			: this.options.maxOutputTokens ?? 1000;
+		return Math.min(this.options.depth === 'detailed' ? Math.round(base * 1.5) : base, depthCap);
 	}
 
 	private get simplified(): boolean {
@@ -159,6 +167,7 @@ export class ExplanationService {
 				{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
 				mode,
 				this.simplified,
+				ui?.previousText,
 			);
 		const work = (overBudget
 			? this.explainSectioned(doc, mode, key, tag, ui)
@@ -393,6 +402,7 @@ export class ExplanationService {
 					ui.onToken!(text);
 				}
 				: undefined,
+			onComplete: details => this.logger?.info(`explain completion: ${logTag} done_reason=${details.doneReason ?? 'unknown'} tokens=${details.tokenCount ?? 'unknown'}`),
 		};
 		this.logger?.info(`explain request: ${logTag} model=${this.options.model} endpoint=${this.client.baseUrl} num_predict=${numPredict}`);
 		try {
@@ -406,7 +416,7 @@ export class ExplanationService {
 			}
 		} catch (err) {
 			if (err instanceof OllamaError) {
-				this.logger?.info(`explain failed: kind=${err.kind}${err.status ? ` status=${err.status}` : ''} duration=${elapsed()} message=${err.message}`);
+				this.logger?.info(`explain failed: kind=${err.kind}${err.status ? ` status=${err.status}` : ''} duration=${elapsed()} message=${err.message} done_reason=${err.doneReason ?? 'unknown'}`);
 				result = this.errorResult(fallbackDoc, err.kind, err.message);
 			} else {
 				this.logger?.info(`explain failed: kind=unavailable duration=${elapsed()} message=${(err as Error)?.message ?? String(err)}`);
@@ -443,6 +453,7 @@ export class ExplanationService {
 					ui.onToken!(text);
 				}
 				: undefined,
+			onComplete: details => this.logger?.info(`chat completion: ${logTag} done_reason=${details.doneReason ?? 'unknown'} tokens=${details.tokenCount ?? 'unknown'}`),
 		};
 		this.logger?.info(`chat request: ${logTag} model=${this.options.model} endpoint=${this.client.baseUrl} num_predict=${this.capFor('chat')}`);
 		try {
@@ -459,7 +470,7 @@ export class ExplanationService {
 			}
 		} catch (err) {
 			if (err instanceof OllamaError) {
-				this.logger?.info(`chat failed: kind=${err.kind}${err.status ? ` status=${err.status}` : ''} duration=${elapsed()} message=${err.message}`);
+				this.logger?.info(`chat failed: kind=${err.kind}${err.status ? ` status=${err.status}` : ''} duration=${elapsed()} message=${err.message} done_reason=${err.doneReason ?? 'unknown'}`);
 				result = this.errorResult(fallbackDoc, err.kind, err.message);
 			} else {
 				this.logger?.info(`chat failed: kind=unavailable duration=${elapsed()} message=${(err as Error)?.message ?? String(err)}`);

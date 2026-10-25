@@ -2,6 +2,14 @@
 
 Record each meaningful project change during the event, newest first. Update this file in the same commit as the change. Use a real timestamp with timezone, for example `YYYY-MM-DDTHH:MM:SS+05:30`.
 
+## 2026-10-25T08:55:00+05:30 — Complete Ollama answers and responsive retries
+
+- Root cause: normal summary/chat requests were capped at 200/300 generated tokens, and the Ollama stream completion reason was ignored. A stream ending at the token limit could therefore look like a successful answer.
+- Changed: increased ordinary and detailed generation budgets, added configurable concise/detailed token ceilings, preserved every streamed response chunk, and inspect `done_reason`/token counts. `done_reason=length` now becomes an explicit incomplete error with an actionable hint instead of being cached or rendered as complete.
+- Changed: kept Retry force-refresh behavior and cancellation/stale-response guards; detailed mode remains a distinct cache key and now has a larger budget. Operational logs include duration, time-to-first-token, completion reason, and token count without source or prompt text.
+- Tests: added token-limit stream regression coverage and updated output-budget assertions. `npm run compile`, `npm run typecheck`, and `npm test` pass — 148/148.
+- Limitation: actual latency and model-specific support for `think:false`/completion metadata still depend on the installed Ollama version and local hardware.
+
 ## 2026-10-25T08:35:00+05:30 — Capture and explain terminal failures
 
 - Changed: subscribed to VS Code shell integration start/end events and read terminal output as the command runs. Failed commands now produce an automatic Tancode explanation containing the command, working directory, exit code, and bounded ANSI-cleaned output.

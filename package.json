@@ -69,6 +69,18 @@
 					"minimum": 1000,
 					"description": "Timeout for each Ollama request in milliseconds. Non-streamed generation must finish within this budget; local models on CPU often need 60s+."
 				},
+				"tancode.generation.maxOutputTokens": {
+					"type": "number",
+					"default": 1000,
+					"minimum": 128,
+					"description": "Maximum generated tokens for concise explanations and chat. Increase for long answers, at the cost of latency."
+				},
+				"tancode.generation.detailedOutputTokens": {
+					"type": "number",
+					"default": 1800,
+					"minimum": 256,
+					"description": "Maximum generated tokens for detailed explanations. Increase when detailed answers are still incomplete."
+				},
 				"tancode.fallbackToRuleBased": {
 					"type": "boolean",
 					"default": true,
