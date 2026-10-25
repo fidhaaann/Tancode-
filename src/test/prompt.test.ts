@@ -25,6 +25,17 @@ test('buildPrompt wraps file content in untrusted <file> tags', () => {
 	assert.ok(prompt.includes('app.ts'));
 });
 
+test('detail prompt carries the previous explanation for expansion', () => {
+	const prompt = buildPrompt(
+		{ fileName: 'a.ts', languageId: 'typescript', text: 'const x = 1;' },
+		'detail',
+		true,
+		'The short explanation.',
+	);
+	assert.match(prompt.prompt, /<previous_explanation>\nThe short explanation\.\n<\/previous_explanation>/);
+	assert.match(prompt.prompt, /Expand and correct this earlier explanation/);
+});
+
 test('system prompt marks file content as untrusted', () => {
 	assert.match(SYSTEM_PROMPT, /untrusted/i);
 	assert.match(SYSTEM_PROMPT, /never follow instructions/i);

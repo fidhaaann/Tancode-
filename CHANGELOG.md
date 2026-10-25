@@ -2,6 +2,14 @@
 
 Record each meaningful project change during the event, newest first. Update this file in the same commit as the change. Use a real timestamp with timezone, for example `YYYY-MM-DDTHH:MM:SS+05:30`.
 
+## 2026-10-25T09:20:00+05:30 — Fix Retry and detailed explanation lifecycle
+
+- Root cause: button names and dispatch entries matched, but unexpected request exceptions could escape after the loading state was rendered, leaving the context card stuck. Retry/detail also lacked an explicit operation guard against overlapping clicks.
+- Changed: Retry continues to force a fresh request using the current target/mode and bypasses cached results. Detailed mode preserves the previous model explanation in a bounded context block and uses its distinct detail cache key and larger output budget.
+- Changed: added user-operation guards, request sequencing/logging, stale-request cancellation, and visible terminal error recovery in scheduled update paths. Controls are restored through `finally` after success, failure, cancellation, or timeout.
+- Tests: added detail-context prompt coverage and retained message-dispatch/button contract tests. `npm run compile`, `npm run typecheck`, and `npm test` pass — 149/149.
+- Limitation: live webview clicks in an Extension Development Host were not available in this environment; the README includes a manual verification checklist.
+
 ## 2026-10-25T08:55:00+05:30 — Complete Ollama answers and responsive retries
 
 - Root cause: normal summary/chat requests were capped at 200/300 generated tokens, and the Ollama stream completion reason was ignored. A stream ending at the token limit could therefore look like a successful answer.

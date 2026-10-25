@@ -137,6 +137,8 @@ export class ExplanationPanel {
 	private pinnedDoc: vscode.TextDocument | undefined;
 	private contextNoteSeen = new Set<string>();
 	private lastExplanationText: string | undefined;
+	private userOperationActive = false;
+	private requestId = 0;
 
 	// `Tancode: Clear Conversation` command path — no-op when no panel exists.
 	static clearChat(): void {
@@ -331,7 +333,7 @@ export class ExplanationPanel {
 	}
 
 	private setFileMode(mode: ExplainMode): void {
-		if (this.target.kind !== 'file') {
+		if (this.target.kind !== 'file' || this.userOperationActive) {
 			return;
 		}
 		this.fileMode = mode;
@@ -340,7 +342,7 @@ export class ExplanationPanel {
 	}
 
 	private setSelectionMode(mode: SelectionMode): void {
-		if (this.target.kind !== 'selection') {
+		if (this.target.kind !== 'selection' || this.userOperationActive) {
 			return;
 		}
 		this.selMode = mode;
@@ -351,6 +353,9 @@ export class ExplanationPanel {
 	}
 
 	private retryLast(): void {
+		if (this.userOperationActive) {
+			return;
+		}
 		switch (this.retryTarget) {
 			case 'question':
 				this.startQuiz();
@@ -406,7 +411,18 @@ export class ExplanationPanel {
 		}
 		this.debounceTimer = setTimeout(() => {
 			this.debounceTimer = undefined;
-			void this.update(force);
+			void this.update(force).catch(error => {
+				getLogger().info(`update failed: ${error instanceof Error ? error.message : String(error)}`);
+				const activeDocument = vscode.window.activeTextEditor?.document;
+				this.render({
+					kind: 'error',
+					fileName: this.target.kind === 'selection' ? this.target.fileName : activeDocument ? fileNameOf(activeDocument) : 'current file',
+					languageName: this.target.kind === 'selection' ? this.target.languageName : activeDocument?.languageId ?? 'unknown',
+					model: this.settings.ollamaModel,
+					message: 'Tancode could not complete the request.',
+					hint: 'Retry the operation. Check the Tancode output log if it continues.',
+				});
+			});
 		}, delay);
 	}
 
@@ -429,6 +445,7 @@ export class ExplanationPanel {
 	private beginRequest(): AbortController {
 		this.currentAbort?.abort();
 		this.currentAbort = new AbortController();
+		this.requestId++;
 		return this.currentAbort;
 	}
 
@@ -526,6 +543,7 @@ export class ExplanationPanel {
 			});
 		};
 		let result: ExplanationResult;
+		this.userOperationActive = true;
 		this.beginInflight();
 		try {
 			result = await this.service.explain(document, this.fileMode, force, {
@@ -533,8 +551,17 @@ export class ExplanationPanel {
 				onToken,
 				previousText: this.fileMode === 'detail' ? this.lastExplanationText : undefined,
 			});
+		} catch (error) {
+			getLogger().info(`file explanation failed: request=${this.requestId} message=${error instanceof Error ? error.message : String(error)}`);
+			result = {
+				status: 'error',
+				kind: 'unavailable',
+				message: 'Tancode could not complete the explanation.',
+				hint: 'Retry the explanation. Check the Tancode output log for details.',
+			};
 		} finally {
 			this.endInflight();
+			this.userOperationActive = false;
 		}
 		if (seq !== this.updateSeq || !this.lastKey?.startsWith(`file:${document.uri.toString()}:`)) {
 			return;
@@ -597,11 +624,21 @@ export class ExplanationPanel {
 			});
 		};
 		let result: ExplanationResult;
+		this.userOperationActive = true;
 		this.beginInflight();
 		try {
 			result = await this.service.explainSelection(selDoc, t.sel, this.selMode, force, { signal: abort.signal, onToken });
+		} catch (error) {
+			getLogger().info(`selection explanation failed: request=${this.requestId} message=${error instanceof Error ? error.message : String(error)}`);
+			result = {
+				status: 'error',
+				kind: 'unavailable',
+				message: 'Tancode could not complete the selection explanation.',
+				hint: 'Retry the explanation. Check the Tancode output log for details.',
+			};
 		} finally {
 			this.endInflight();
+			this.userOperationActive = false;
 		}
 		if (seq !== this.updateSeq || this.lastKey !== key) {
 			return;

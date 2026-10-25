@@ -150,6 +150,7 @@ All settings live under the `tancode.*` prefix (Settings → search "tancode").
 - *Check dependency versions:* open `package.json` and ask "what TypeScript version does this project need?" — Tancode answers with the declared range vs lockfile-resolved version, never a guessed install.
 - *Plain-language explanation:* ask "explain this like I'm a beginner" — technical + simplified explanations are on by default.
 - *Large file:* open a big file — the header explains it was analyzed in sections and discloses any section that couldn't be analyzed.
+- *Retry or expand:* after an explanation fails or completes, use **Retry** for a fresh request or **Explain in more detail** for a distinct, context-aware detailed request. Both show loading/progress and restore controls after success, failure, or cancellation.
 - *Session recap:* after working a while, type "wrap up" or "I'm done" for an evidence-grounded recap with two optional explain-back questions.
 - *Control noise:* "pause proactive" / "resume", or the toolbar toggle; "clear the chat" resets the conversation.
 
@@ -193,6 +194,8 @@ Project orientation scans recursively using the registry in [`src/fileTypes.ts`]
 - Ask for a normal explanation, then choose **Explain in more detail** and confirm the second request has a larger `num_predict` budget and expands the prior explanation.
 - Use a response long enough to reach the configured limit and confirm Tancode shows an incomplete-generation error with Retry guidance rather than a falsely completed answer.
 - Press Stop during streaming and confirm the partial response is not presented as a completed answer.
+- Trigger a failed request, click **Retry**, and confirm a fresh loading state and replacement response.
+- Complete a short explanation, click **Explain in more detail**, and confirm the request includes the earlier explanation and returns a deeper answer.
 
 Set `tancode.scan.excludeDirs` to add directory names to the default exclusions, or set `tancode.scan.includeGenerated` to include those directories (binary and `.gitignore` exclusions still apply). Scan facts report discovered, skipped, and failed files. Chat can retrieve a referenced supported file from the workspace even when it is not the active editor, for example “Explain `styles/app.css`”; only that relevant file is added to context.
 
