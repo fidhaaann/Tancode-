@@ -13,6 +13,7 @@ All inference runs against a locally installed Ollama server. Nothing is uploade
 - **Selected-code context** — select code and run *Tancode: Explain Selected Code* for an explanation, a structured Learn breakdown, or a "Test My Understanding" quiz.
 - **Proactive learning insights** — event-driven notes on meaningful saves, new diagnostics, and opened project manifests; debounced, deduplicated, cooldown-gated, and pausable.
 - **Error and diagnostic explanations** — explains what the editor diagnostic actually says, the likely cause, the underlying concept, and how to verify a fix — never applies changes.
+- **Automatic terminal error explanations** — shell-integrated terminal commands that exit unsuccessfully are captured locally and explained with their command, exit code, working directory, and bounded output. Tancode never re-runs the command.
 - **JSON/JSONC support** — `.json` and `.jsonc` files (including `tsconfig.json` with comments and trailing commas) get structural explanations; invalid or incomplete JSON is reported as such, never treated as valid.
 - **Project version awareness** — a local tech profile distinguishes **declared** manifest ranges, **resolved** lockfile versions, and **detected runtime** versions. Opening a manifest posts one grounded note.
 - **Technical + simplified explanations** — substantial answers teach WHAT → HOW → WHY, plus a plain-language version and a real-world analogy when enabled.
@@ -163,7 +164,7 @@ All settings live under the `tancode.*` prefix (Settings → search "tancode").
 | Blank webview | EDH Developer Tools → Console errors; also `Tancode: Clear Conversation`. |
 | Large file is slow | Expected — sections run sequentially against a local model; raise `maxSourceBytes` for fewer sections if your model's context allows. |
 | JSON flagged invalid | Look at VS Code diagnostics first — Tancode reports the editor's parse errors rather than re-guessing validity. |
-| Error explanation lacks runtime output | Tancode can ground explanations in VS Code diagnostics, build/test evidence supplied in context, and project files. It does not automatically read arbitrary terminal output or execute commands. Paste runtime output into chat when needed; model suggestions are never applied automatically. |
+| Error explanation lacks runtime output | Tancode automatically captures output from commands whose shell integration starts after the extension is active. For terminals without shell integration, task terminals, or commands started before activation, paste the output into chat; Tancode never re-runs commands. |
 
 ## Development and testing
 
@@ -175,7 +176,7 @@ npm run watch        # incremental compile
 npm test             # node --test out/test/*.test.js (pretest recompiles)
 ```
 
-`scripts/preflight.js` runs before compile/typecheck/watch to check the toolchain. The test suite (145 tests) covers prompts, diagnostic evidence metadata, chat role construction, Ollama response/stream parsing, caching, failure paths, the JSONC parser, tech-profile extraction, sectioning, message dispatch, scanning, and the view render — all with Ollama mocked; no model download is needed to run them.
+`scripts/preflight.js` runs before compile/typecheck/watch to check the toolchain. The test suite (147 tests) covers prompts, diagnostic evidence metadata, terminal capture formatting, chat role construction, Ollama response/stream parsing, caching, failure paths, the JSONC parser, tech-profile extraction, sectioning, message dispatch, scanning, and the view render — all with Ollama mocked; no model download is needed to run them.
 
 ### Project scanning and file context
 

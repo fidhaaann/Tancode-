@@ -2,6 +2,13 @@
 
 Record each meaningful project change during the event, newest first. Update this file in the same commit as the change. Use a real timestamp with timezone, for example `YYYY-MM-DDTHH:MM:SS+05:30`.
 
+## 2026-10-25T08:35:00+05:30 — Capture and explain terminal failures
+
+- Changed: subscribed to VS Code shell integration start/end events and read terminal output as the command runs. Failed commands now produce an automatic Tancode explanation containing the command, working directory, exit code, and bounded ANSI-cleaned output.
+- Safety: terminal text is passed as untrusted evidence; Tancode never executes or retries the command, and output is bounded locally before it reaches Ollama. Successful commands remain silent.
+- Tests: added terminal capture and context-formatting tests. `npm run typecheck` and `npm test` pass — 147/147.
+- Limitation: VS Code cannot expose output for every terminal type. Task terminals, terminals without shell integration, and commands that began before Tancode activation may provide only partial metadata or require pasted output.
+
 ## 2026-10-25T08:20:00+05:30 — Add evidence-aware diagnostic mentoring
 
 - Root cause: diagnostic explanations did not consistently preserve VS Code's exact location/provider metadata, and chat had no separate path for error-focused questions.

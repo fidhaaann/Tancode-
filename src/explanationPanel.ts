@@ -15,6 +15,7 @@ import { collectProjectFacts, collectTechProfile, formatFacts, formatTechProfile
 import { findProjectFile, readProjectFile } from './fileScanner';
 import { languageIdFor } from './fileTypes';
 import { execFileSync } from 'node:child_process';
+import { formatTerminalErrorContext, TerminalErrorCapture } from './terminal';
 
 const PANEL_VIEW_TYPE = 'tancode.explanation';
 const DEBOUNCE_MS = 350;
@@ -139,6 +140,13 @@ export class ExplanationPanel {
 	// `Tancode: Clear Conversation` command path — no-op when no panel exists.
 	static clearChat(): void {
 		ExplanationPanel.current?.clearConversation();
+	}
+
+	static explainTerminalError(context: vscode.ExtensionContext, error: TerminalErrorCapture): void {
+		if (!ExplanationPanel.current) {
+			ExplanationPanel.createOrShow(context);
+		}
+		void ExplanationPanel.current?.answerTerminalError(error);
 	}
 
 	static createOrShow(context: vscode.ExtensionContext): void {
@@ -857,6 +865,7 @@ export class ExplanationPanel {
 			this.pushEntry(assistantMessage(++this.nextId, 'info', 'Open a source file or select some code, then ask again.'));
 			return;
 		}
+
 		const seq = ++this.updateSeq;
 		const abort = this.beginRequest();
 		const entryId = ++this.nextId;
@@ -892,6 +901,48 @@ export class ExplanationPanel {
 			return;
 		}
 		this.finishChatEntry(entryId, result);
+	}
+
+	private async answerTerminalError(error: TerminalErrorCapture): Promise<void> {
+		const seq = ++this.updateSeq;
+		const abort = this.beginRequest();
+		const entryId = ++this.nextId;
+		this.pushEntry(assistantMessage(entryId, 'error', '', { partial: true, model: this.settings.ollamaModel, dismissible: true }));
+		const entry = this.entries.find(e => e.id === entryId);
+		let lastPaint = 0;
+		const onToken = (accumulated: string): void => {
+			const now = Date.now();
+			if (seq !== this.updateSeq || now - lastPaint < STREAM_PAINT_MS || !entry || entry.kind !== 'message') {
+				return;
+			}
+			lastPaint = now;
+			entry.text = accumulated;
+			this.renderAll();
+		};
+		const doc: DocLike = {
+			fileName: 'Terminal output',
+			languageId: 'plaintext',
+			uri: { fsPath: 'Terminal output', toString: () => 'tancode:terminal-output' },
+			version: 0,
+			getText: () => error.output,
+		};
+		const question = `Explain this failed terminal command, identify the confirmed error evidence, likely root cause, and safe ways to verify or fix it. Do not claim that any fix was applied.\n\n${formatTerminalErrorContext(error)}`;
+		this.beginInflight();
+		try {
+			const result = await this.service.chatAnswer(
+				doc,
+				undefined,
+				question,
+				this.history,
+				{ signal: abort.signal, onToken },
+				formatTerminalErrorContext(error),
+			);
+			if (seq === this.updateSeq) {
+				this.finishChatEntry(entryId, result);
+			}
+		} finally {
+			this.endInflight();
+		}
 	}
 
 	private errorContextForChat(question: string): string | undefined {
