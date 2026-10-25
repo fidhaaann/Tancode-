@@ -269,6 +269,7 @@ export function buildChatPrompt(
 	sel: CodeSelection | undefined,
 	question: string,
 	history: Array<{ role: 'user' | 'assistant'; text: string }>,
+	projectContext?: string,
 ): { system: string; prompt: string } {
 	const parts: string[] = [
 		`Answer the user's question about "${doc.fileName}" (${doc.languageId}) directly and concisely.`,
@@ -276,6 +277,17 @@ export function buildChatPrompt(
 		'If the provided code does not contain the answer, say so plainly instead of inventing details.',
 		'',
 	];
+	if (projectContext) {
+		parts.push(
+			'<project_context>',
+			'Facts extracted locally from project manifests. Version entries are declared ranges or',
+			'lockfile-resolved versions — never assume either is installed. Use these when the',
+			'question touches configuration, dependencies, or versions.',
+			projectContext,
+			'</project_context>',
+			'',
+		);
+	}
 	if (history.length > 0) {
 		parts.push('<history>');
 		for (const h of history) {
@@ -381,4 +393,26 @@ export function buildWrapupPrompt(data: SessionRecapData): { system: string; pro
 		parts.push('</session_conversation>');
 	}
 	return { system: SYSTEM_PROMPT, prompt: parts.join('\n') };
+}
+
+// Proactive note for an opened project manifest (package.json, tsconfig…).
+// Grounded ONLY in the extracted tech profile — the model explains evidence
+// already classified declared/resolved/runtime, never guesses versions.
+export function buildManifestInsightPrompt(fileName: string, profileText: string): { system: string; prompt: string } {
+	return {
+		system: SYSTEM_PROMPT,
+		prompt: [
+			`A developer just opened "${fileName}", a project configuration file. Below is what was`,
+			'actually extracted from the project\'s manifests — declared requirements, lockfile-resolved',
+			'versions, and detected runtimes. Explain ONE genuinely useful thing about this',
+			'configuration in 2-4 sentences: what an important setting means, how it affects the project,',
+			'or a declared-vs-resolved difference worth understanding. Speak directly to the developer.',
+			'Never claim a version is installed — declared ranges and lockfile resolutions are evidence,',
+			'not the runtime. If nothing looks worth interrupting for, reply with exactly: NONE',
+			'',
+			'<project_profile>',
+			profileText,
+			'</project_profile>',
+		].join('\n'),
+	};
 }

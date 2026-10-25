@@ -5,6 +5,7 @@ import {
 	buildChatPrompt,
 	buildDiagnosticPrompt,
 	buildInsightPrompt,
+	buildManifestInsightPrompt,
 	buildOrientationPrompt,
 	buildPrompt,
 	buildWrapupPrompt,
@@ -166,4 +167,21 @@ test('learn + diagnostic prompts include simplified-guidance only when enabled',
 	assert.ok(!buildSelectionPrompt(doc2, sel, 'learn', false).prompt.includes('In plain terms'));
 	assert.match(buildDiagnosticPrompt(doc2, sel, diag, true).prompt, /plain-language/);
 	assert.ok(!buildDiagnosticPrompt(doc2, sel, diag, false).prompt.includes('plain-language'));
+});
+
+test('manifest insight prompt is evidence-only, NONE allowed', () => {
+	const p = buildManifestInsightPrompt('tsconfig.json', 'engines.node: >=20 — declared');
+	assert.ok(p.prompt.includes('project_profile'));
+	assert.ok(p.prompt.includes('engines.node: >=20'));
+	assert.ok(p.prompt.includes('NONE'));
+	assert.ok(p.prompt.includes('Never claim a version is installed'));
+});
+
+test('chat prompt embeds project context when provided', () => {
+	const doc = { fileName: 'app.ts', languageId: 'typescript', text: 'x' };
+	const withCtx = buildChatPrompt(doc, undefined, 'which node version?', []);
+	assert.ok(!withCtx.prompt.includes('<project_context>'));
+	const ctx = buildChatPrompt(doc, undefined, 'which node version?', [], 'engines.node: >=20');
+	assert.ok(ctx.prompt.includes('<project_context>'));
+	assert.ok(ctx.prompt.includes('engines.node: >=20'));
 });
