@@ -2,6 +2,12 @@
 
 Record each meaningful project change during the event, newest first. Update this file in the same commit as the change. Use a real timestamp with timezone, for example `YYYY-MM-DDTHH:MM:SS+05:30`.
 
+## 2026-10-24 — Fix: pinned chat context survives file clicks (UTC)
+
+- Bug: while chatting, clicking/opening another source file silently re-pointed the conversation — `onDidChangeActiveTextEditor` re-explained the newly focused file and `currentDoc()` read `activeTextEditor`, so both the pinned context card and the doc chat answers describe switched files mid-conversation.
+- Fix: the panel now pins the context file (uri + document) once an explanation renders; while `history` is non-empty, switching editors posts one dismissible note ("Context is still X — run Tancode: Explain Current File…") and keeps the pinned context. Chat answers (`currentDoc`) use the pinned doc, not the focused editor. `Explain Current File` / Back-to-file still repin intentionally; Clear Conversation resumes normal auto-tracking.
+- Validation: `npm run compile`, `npm run typecheck`, `npm test` — 128/128. Interactive click behavior needs the Extension Dev Host (no desktop VS Code here).
+
 ## 2026-10-24 — JSON intelligence + project version awareness (UTC)
 
 - `.json`/`.jsonc` files are now supported: a tolerant JSONC parser (comments, trailing commas) drives a structural rules fallback (top-level keys, nesting depth) and never pretends invalid/incomplete JSON is valid.

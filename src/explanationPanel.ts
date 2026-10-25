@@ -126,6 +126,12 @@ export class ExplanationPanel {
 	private techProfile: TechProfile | undefined;
 	private manifestBusy = false;
 	private manifestSeen = new Set<string>();
+	// Pinned conversation context: once a chat exists, clicking around other
+	// source files must not silently swap which file the conversation is
+	// about. Only an explicit action (Explain command / Back-to-file) repins.
+	private contextFileUri: string | undefined;
+	private pinnedDoc: vscode.TextDocument | undefined;
+	private contextNoteSeen = new Set<string>();
 
 	// `Tancode: Clear Conversation` command path — no-op when no panel exists.
 	static clearChat(): void {
@@ -231,6 +237,18 @@ export class ExplanationPanel {
 				// Selection/quiz views describe captured code, not the active
 				// editor — file switches don't disturb them.
 				if (this.target.kind !== 'file') {
+					return;
+				}
+				// With a conversation in progress, keep the pinned context on the
+				// file it is about — opening another file must not silently
+				// re-point the chat. Explain Current File still repins it.
+				if (
+					editor &&
+					this.contextFileUri &&
+					editor.document.uri.toString() !== this.contextFileUri &&
+					this.history.length > 0
+				) {
+					this.noteContextKept(editor.document);
 					return;
 				}
 				this.scheduleUpdate();
@@ -446,6 +464,8 @@ export class ExplanationPanel {
 			return;
 		}
 		this.lastKey = key;
+		this.contextFileUri = document.uri.toString();
+		this.pinnedDoc = document;
 		this.retryTarget = 'explanation';
 
 		const fileName = fileNameOf(document);
@@ -787,7 +807,22 @@ export class ExplanationPanel {
 		if (this.target.kind === 'selection') {
 			return this.selectionDoc(this.target);
 		}
-		return vscode.window.activeTextEditor?.document;
+		// Chat answers describe the pinned context file, not whichever
+		// editor happens to have focus.
+		return this.pinnedDoc ?? vscode.window.activeTextEditor?.document;
+	}
+
+	// One dismissible note per visited file — tells the user the context was
+	// kept and how to switch it, without spamming the feed on every click.
+	private noteContextKept(document: vscode.TextDocument): void {
+		const uri = document.uri.toString();
+		if (this.contextNoteSeen.has(uri)) {
+			return;
+		}
+		this.contextNoteSeen.add(uri);
+		this.pushEntry(assistantMessage(++this.nextId, 'info',
+			`Context is still ${this.pinnedDoc ? fileNameOf(this.pinnedDoc) : 'the current file'} — run **Tancode: Explain Current File** on ${fileNameOf(document)} to switch the conversation to it.`,
+			{ dismissible: true }));
 	}
 
 	private async answerDirect(text: string): Promise<void> {
