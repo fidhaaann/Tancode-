@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { summarizeJson } from './jsonc';
 
 export interface SymbolInfo {
 	kind: 'function' | 'class' | 'interface' | 'type' | 'enum' | 'component' | 'constant' | 'method';
@@ -23,6 +24,7 @@ export interface FileExplanation {
 const SUPPORTED_LANGUAGES = new Set([
 	'typescript', 'typescriptreact', 'javascript', 'javascriptreact',
 	'python', 'java', 'c', 'cpp', 'csharp', 'go', 'rust', 'php', 'ruby', 'swift', 'kotlin', 'scala',
+	'json', 'jsonc',
 ]);
 
 const LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
@@ -42,6 +44,8 @@ const LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
 	swift: 'Swift',
 	kotlin: 'Kotlin',
 	scala: 'Scala',
+	json: 'JSON',
+	jsonc: 'JSON with Comments',
 };
 
 // Guard against pathological files: reading a huge document into the
@@ -98,6 +102,51 @@ const RUBY_PATTERNS: DeclPattern[] = [
 	{ kind: 'type', pattern: /^\s*module\s+([A-Za-z_][\w:]*)/ },
 	{ kind: 'function', pattern: /^\s*def\s+([A-Za-z_][\w!?=]*)/ },
 ];
+
+// Structural fallback for JSON documents: top-level keys, shape, and depth
+// from the tolerant JSONC parse. Invalid/incomplete JSON is reported as
+// such — we never pretend a broken document is valid.
+function explainJson(
+	document: Pick<vscode.TextDocument, 'languageId' | 'fileName' | 'uri' | 'getText'>,
+	text: string,
+	languageId: string,
+	languageName: string,
+): FileExplanation {
+	const fileName = path.basename(document.fileName);
+	const lines = text.split(/\r?\n/);
+	const nonBlank = lines.filter(l => l.trim().length > 0).length;
+	const parsed = summarizeJson(text);
+
+	const summaryParts: string[] = [];
+	const details: string[] = [`Language: ${languageName}`, `Lines: ${lines.length} total, ${nonBlank} non-blank`];
+	if (parsed.ok) {
+		summaryParts.push(`This is a ${languageName} ${parsed.kind} document`);
+		if (parsed.topLevelKeys && parsed.topLevelKeys.length > 0) {
+			summaryParts.push(`with ${parsed.topLevelKeys.length} top-level ${parsed.topLevelKeys.length === 1 ? 'key' : 'keys'}: ${parsed.topLevelKeys.slice(0, 8).join(', ')}${parsed.topLevelKeys.length > 8 ? ', …' : ''}.`);
+			details.push(`Top-level keys: ${parsed.topLevelKeys.join(', ')}`);
+		} else {
+			summaryParts.push('.');
+		}
+		if (parsed.maxDepth !== undefined && parsed.maxDepth > 2) {
+			details.push(`Nesting depth: ${parsed.maxDepth}`);
+		}
+	} else {
+		summaryParts.push(`This ${languageName} file does not currently parse (${parsed.error}). It may be incomplete while editing or contain a syntax error — see editor diagnostics.`);
+	}
+
+	return {
+		fileName,
+		languageId,
+		languageName,
+		lineCount: lines.length,
+		nonBlankLineCount: nonBlank,
+		summary: summaryParts.join(''),
+		symbols: [],
+		imports: [],
+		exports: [],
+		details,
+	};
+}
 
 const SWIFT_KOTLIN_PATTERNS: DeclPattern[] = [
 	{ kind: 'class', pattern: /^\s*(?:public|private|internal|open|final|data|abstract|\s)*\s*class\s+([A-Za-z_][\w]*)/ },
@@ -165,6 +214,12 @@ export function explain(document: Pick<vscode.TextDocument, 'languageId' | 'file
 
 	const languageId = document.languageId;
 	const languageName = LANGUAGE_DISPLAY_NAMES[languageId] ?? languageId;
+
+	// JSON files get a structural summary from the tolerant parser — no
+	// declaration/import pattern scanning.
+	if (languageId === 'json' || languageId === 'jsonc') {
+		return explainJson(document, text, languageId, languageName);
+	}
 	const fileName = path.basename(document.uri.fsPath) || document.uri.path.split('/').pop() || 'untitled';
 
 	const lines = text.split(/\r?\n/);

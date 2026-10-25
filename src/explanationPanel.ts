@@ -11,7 +11,8 @@ import { renderConversationDocument, ViewState } from './view';
 import { assistantMessage, ChatEntry, pushTurn, HistoryTurn, stateEntry, userMessage } from './conversation';
 import { routeMessage } from './chat';
 import { diagKey, DiagLike, effectiveCooldownSeconds, hashContent, pickDiagnostic, ProactiveBudget } from './proactive';
-import { collectProjectFacts, formatFacts, ProjectFacts } from './project';
+import { collectProjectFacts, collectTechProfile, formatFacts, formatTechProfile, ProjectFacts, TechProfile } from './project';
+import { execFileSync } from 'node:child_process';
 
 const PANEL_VIEW_TYPE = 'tancode.explanation';
 const DEBOUNCE_MS = 350;
@@ -32,6 +33,21 @@ const STREAM_PAINT_MS = 120;
 
 function fileNameOf(document: vscode.TextDocument): string {
 	return document.fileName.split(/[\\/]/).pop() ?? 'untitled';
+}
+
+// Manifests/configs worth a proactive note or a profile refresh — matched by
+// basename so they fire from any directory depth.
+const MANIFEST_FILES = new Set([
+	'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock',
+	'tsconfig.json', 'jsconfig.json', 'launch.json', 'tasks.json', 'settings.json',
+	'.nvmrc', '.node-version', 'requirements.txt', 'pyproject.toml', 'Pipfile', 'Pipfile.lock',
+	'go.mod', 'go.sum', 'Cargo.toml', 'Cargo.lock', 'pom.xml',
+	'build.gradle', 'build.gradle.kts', 'composer.json', 'composer.lock',
+	'Gemfile', 'Gemfile.lock', 'Dockerfile', 'docker-compose.yml',
+]);
+
+function isManifestFile(name: string): boolean {
+	return MANIFEST_FILES.has(name);
 }
 
 function makeNonce(): string {
@@ -107,6 +123,9 @@ export class ExplanationPanel {
 	private orientationBusy = false;
 	private projectFacts: ProjectFacts | undefined;
 	private touchedFiles: string[] = [];
+	private techProfile: TechProfile | undefined;
+	private manifestBusy = false;
+	private manifestSeen = new Set<string>();
 
 	// `Tancode: Clear Conversation` command path — no-op when no panel exists.
 	static clearChat(): void {
@@ -271,6 +290,11 @@ export class ExplanationPanel {
 					return;
 				}
 				this.noteTouchedFile(document);
+				// A manifest edit invalidates the tech profile — deps, engines,
+				// and resolved versions may have changed.
+				if (isManifestFile(fileNameOf(document))) {
+					this.techProfile = undefined;
+				}
 				this.scheduleInsight();
 			})
 		);
@@ -479,6 +503,7 @@ export class ExplanationPanel {
 
 		this.renderResult(result, { fileName, languageName, target: 'file', mode: this.fileMode });
 		this.maybeOrientation();
+		this.maybeManifestInsight(document);
 	}
 
 	private async updateSelection(force = false): Promise<void> {
@@ -792,7 +817,7 @@ export class ExplanationPanel {
 		this.beginInflight();
 		let result: ExplanationResult;
 		try {
-			result = await this.service.chatAnswer(doc, sel, text, this.history, { signal: abort.signal, onToken });
+			result = await this.service.chatAnswer(doc, sel, text, this.history, { signal: abort.signal, onToken }, this.techProfileText());
 		} finally {
 			this.endInflight();
 		}
@@ -901,6 +926,77 @@ export class ExplanationPanel {
 		} catch {
 			return undefined;
 		}
+	}
+
+	// Project tech profile — collected lazily, refreshed when a manifest is
+	// saved. Runtime detection is a real probe (node --version), reported as
+	// "detected local runtime" — never conflated with declared/resolved.
+	private getTechProfile(): TechProfile | undefined {
+		if (this.techProfile) {
+			return this.techProfile;
+		}
+		const editor = vscode.window.activeTextEditor;
+		const folder = editor ? vscode.workspace.getWorkspaceFolder(editor.document.uri) : undefined;
+		const root = folder?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+		if (!root) {
+			return undefined;
+		}
+		try {
+			this.techProfile = collectTechProfile(root, () => {
+				try {
+					const v = execFileSync('node', ['--version'], { timeout: 3000 }).toString().trim();
+					return v ? { tool: 'node', version: v } : undefined;
+				} catch {
+					return undefined;
+				}
+			});
+			return this.techProfile;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private techProfileText(): string | undefined {
+		const p = this.getTechProfile();
+		if (!p) {
+			return undefined;
+		}
+		const text = formatTechProfile(p);
+		return text.length > 0 ? text : undefined;
+	}
+
+	// Proactive note when a project manifest (package.json, tsconfig, …) is
+	// opened — one grounded remark from the extracted profile, or NONE.
+	private maybeManifestInsight(document: vscode.TextDocument): void {
+		const fileName = fileNameOf(document);
+		if (!isManifestFile(fileName) || this.manifestBusy || !this.settings.proactiveEnabled || this.settings.proactiveLevel === 'errors-only') {
+			return;
+		}
+		const profileText = this.techProfileText();
+		if (!profileText) {
+			return;
+		}
+		const key = `manifest:${fileName}:${hashContent(profileText)}`;
+		if (this.manifestSeen.has(key) || this.proactiveBudget.check(key) !== 'allow') {
+			return;
+		}
+		this.manifestBusy = true;
+		this.beginInflight();
+		const abort = this.beginProactive();
+		void this.service.manifestInsight(fileName, profileText, key, { signal: abort.signal })
+			.then(result => {
+				this.manifestSeen.add(key);
+				if (result.status === 'ok' && result.source === 'model' && result.text.trim() !== 'NONE' && result.text.trim().length > 0) {
+					this.proactiveBudget.commit(key);
+					this.pushEntry(assistantMessage(++this.nextId, 'insight', result.text, {
+						model: this.settings.ollamaModel, dismissible: true,
+					}));
+				}
+			})
+			.finally(() => {
+				this.manifestBusy = false;
+				this.endInflight();
+			});
 	}
 
 	// Stage A: once per panel session, post a project orientation built only

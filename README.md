@@ -145,3 +145,9 @@ This repo follows the DevDay Kochi hackathon participant conventions: [RULES.md]
 - Source code, comments, README contents, and model responses are treated as untrusted input.
 - No environment variables or secrets are written to logs.
 - No telemetry or external data transmission without an explicit, reviewed requirement.
+
+### JSON & project version awareness
+
+- `.json` / `.jsonc` files are supported — Tancode explains structure, important keys, and configuration meaning (WHAT/HOW/WHY, plain-language + analogy when enabled).
+- A local **tech profile** reads `package.json`, `package-lock.json`, `tsconfig.json`, `.nvmrc`, and (conservatively) `requirements.txt`, `go.mod`, `Cargo.toml`, `Gemfile`, `composer.json`, `Dockerfile` — classifying every version as **declared** (manifest range), **resolved** (lockfile pin), **runtime** (a real `node --version` probe), or **unknown**. Declared is never claimed as installed.
+- Opening a manifest (e.g. `tsconfig.json`) posts one proactive, evidence-grounded note — or stays quiet. Chat questions about versions/config get the profile as context. Secret-looking values are redacted before anything reaches the model.

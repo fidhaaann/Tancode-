@@ -7,6 +7,7 @@ import {
 	buildChatPrompt,
 	buildDiagnosticPrompt,
 	buildInsightPrompt,
+	buildManifestInsightPrompt,
 	buildOrientationPrompt,
 	buildPrompt,
 	buildQuestionPrompt,
@@ -266,10 +267,11 @@ export class ExplanationService {
 		question: string,
 		history: Array<{ role: 'user' | 'assistant'; text: string }>,
 		ui?: RequestUi,
+		projectContext?: string,
 	): Promise<ExplanationResult> {
 		const parts = buildChatPrompt(
 			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
-			sel, question, history,
+			sel, question, history, projectContext,
 		);
 		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=chat bytes=${question.length}`, undefined, doc, this.capFor('chat'), ui);
 	}
@@ -355,6 +357,24 @@ export class ExplanationService {
 			this.cache.set(key, result);
 		}
 		return result;
+	}
+
+	// Proactive note for an opened manifest, grounded only in the extracted
+	// tech profile. Cached by the caller's profile key — the model may
+	// answer 'NONE' and the panel stays quiet.
+	async manifestInsight(fileName: string, profileText: string, cacheKey: string, ui?: RequestUi): Promise<ExplanationResult> {
+		const hit = this.cache.get(cacheKey);
+		if (hit) {
+			this.logger?.info(`explain cache hit: mode=manifest file=${baseName(fileName)}`);
+			return hit.status === 'ok' && hit.source === 'model' ? { ...hit, fromCache: true } : hit;
+		}
+		const parts = buildManifestInsightPrompt(baseName(fileName), profileText);
+		const emptyDoc: DocLike = {
+			languageId: 'json', fileName, version: 0,
+			uri: { fsPath: '', toString: () => 'manifest://' },
+			getText: () => '',
+		};
+		return this.runInference(parts, `mode=manifest file=${baseName(fileName)}`, cacheKey, emptyDoc, this.capFor('insight'), ui);
 	}
 
 	// One-shot project orientation from deterministic facts collected by

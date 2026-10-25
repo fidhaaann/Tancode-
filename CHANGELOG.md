@@ -2,6 +2,17 @@
 
 Record each meaningful project change during the event, newest first. Update this file in the same commit as the change. Use a real timestamp with timezone, for example `YYYY-MM-DDTHH:MM:SS+05:30`.
 
+## 2026-10-24 — JSON intelligence + project version awareness (UTC)
+
+- `.json`/`.jsonc` files are now supported: a tolerant JSONC parser (comments, trailing commas) drives a structural rules fallback (top-level keys, nesting depth) and never pretends invalid/incomplete JSON is valid.
+- New project tech profile (`src/project.ts`): `package.json` deps/engines/scripts, `package-lock.json`/`npm-shrinkwrap.json` resolved versions, `tsconfig.json` compilerOptions, `.nvmrc`/`.node-version` toolchain files, and conservative text extraction for `requirements.txt`, `go.mod`, `Cargo.toml`, `composer.json`, `Gemfile`, `Dockerfile`.
+- Versions are classified **declared / resolved / runtime / unknown** — a manifest range is never claimed installed; lockfile resolutions and exact-version conflicts are surfaced explicitly. `node --version` is probed as a real detected runtime and labelled as such.
+- Secret-looking keys (`token`, `password`, `api_key`, …) are redacted before any config data reaches a prompt or log.
+- Proactive manifest insight: opening a manifest/config file posts one grounded note (e.g. what `engines.node` actually means) or stays quiet (`NONE`); deduped by profile hash, budget-gated, dismissible.
+- Chat answers now receive the tech profile as `<project_context>` so version/config questions are evidence-grounded.
+- Validation: `npm run compile`, `npm run typecheck`, `npm test` — 128/128 pass on Node v24.
+- Not verified: live proactive note + chat answers in the Extension Development Host (no desktop VS Code/Ollama on this VM).
+
 ## Event build log
 
 ## 2026-10-25T04:30:00+05:30 — JARVIS mentor: project orientation, WHAT/HOW/WHY teaching, wrap-up, richer controls

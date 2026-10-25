@@ -315,3 +315,24 @@ test('detailed depth scales output budgets ~1.5x', async () => {
 	await service.explain(doc(), 'summary');
 	assert.equal(genOpts[0]?.numPredict, 300, 'summary 200 * 1.5');
 });
+
+test('manifestInsight returns model text and caches by caller key', async () => {
+	let calls = 0;
+	const { service } = makeService(async () => { calls++; return 'engines.node is a declared requirement, not the installed version.'; });
+	const r1 = await service.manifestInsight('tsconfig.json', 'engines.node: >=20', 'k1');
+	assert.equal(r1.status, 'ok');
+	if (r1.status === 'ok' && r1.source === 'model') {
+		assert.ok(r1.text.includes('declared requirement'));
+	}
+	const r2 = await service.manifestInsight('tsconfig.json', 'engines.node: >=20', 'k1');
+	assert.equal(r2.status === 'ok' && r2.source === 'model' && r2.fromCache, true);
+	assert.equal(calls, 1);
+});
+
+test('manifestInsight re-requests when the profile key changes', async () => {
+	let calls = 0;
+	const { service } = makeService(async () => { calls++; return 'note'; });
+	await service.manifestInsight('package.json', 'v1', 'k2');
+	await service.manifestInsight('package.json', 'v2', 'k2b');
+	assert.equal(calls, 2);
+});
