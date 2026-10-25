@@ -61,7 +61,7 @@
 					"type": "number",
 					"default": 65536,
 					"minimum": 1024,
-					"description": "Files larger than this many bytes are not sent to the model."
+					"description": "Prompt context budget in characters. Files larger than this are analyzed in sequential sections rather than rejected — raise it to send more per request, lower it to keep requests smaller."
 				},
 				"tancode.requestTimeoutMs": {
 					"type": "number",

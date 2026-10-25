@@ -735,8 +735,6 @@ export class ExplanationPanel {
 				return { kind: 'empty', fileName: ctx.fileName, lines: ctx.lines };
 			case 'unsupported':
 				return { kind: 'unsupported', fileName: ctx.fileName, languageId: ctx.languageName, lines: ctx.lines };
-			case 'tooLarge':
-				return { kind: 'tooLarge', fileName: ctx.fileName, bytes: result.bytes, limit: result.limit, lines: ctx.lines };
 			case 'error':
 				return {
 					kind: 'error', fileName: ctx.fileName, languageName: ctx.languageName, lines: ctx.lines,

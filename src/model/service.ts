@@ -2,13 +2,16 @@ import type { FileExplanation } from '../analysis';
 import { ExplanationCache } from './cache';
 import { OllamaClient, OllamaError, OllamaErrorKind } from './ollama';
 import type { GenerateOptions } from './ollama';
+import { declarationsOf, splitSections } from './sections';
 import {
 	buildAssessmentPrompt,
 	buildChatPrompt,
 	buildDiagnosticPrompt,
 	buildInsightPrompt,
+	buildCombinePrompt,
 	buildManifestInsightPrompt,
 	buildOrientationPrompt,
+	buildSectionPrompt,
 	buildPrompt,
 	buildQuestionPrompt,
 	buildSelectionPrompt,
@@ -46,7 +49,6 @@ export type ExplanationResult =
 	| { status: 'ok'; source: 'rules'; explanation: FileExplanation }
 	| { status: 'unsupported' }
 	| { status: 'empty' }
-	| { status: 'tooLarge'; bytes: number; limit: number }
 	| { status: 'error'; kind: OllamaErrorKind; message: string; hint: string; fallback?: FileExplanation };
 
 export function hintFor(kind: OllamaErrorKind, model: string, baseUrl: string): string {
@@ -81,6 +83,7 @@ const NUM_PREDICT: Record<string, number> = {
 	diagnostic: 400,
 	orientation: 350,
 	recap: 600,
+	section: 250,
 };
 
 // Optional streaming/cancellation channel from the panel. `signal` aborts
@@ -147,17 +150,77 @@ export class ExplanationService {
 			}
 		}
 
-		const parts = buildPrompt(
-			{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
-			mode,
-			this.simplified,
-		);
-		const work = this.runInference(parts, tag, key, doc, this.capFor(mode), ui)
+		// Files larger than the context budget are analyzed section-by-section
+		// (sequential, cancellable) then combined — never truncated or rejected.
+		const overBudget = doc.getText().length > this.options.maxSourceBytes;
+		const parts = overBudget
+			? undefined
+			: buildPrompt(
+				{ fileName: doc.fileName, languageId: doc.languageId, text: doc.getText() },
+				mode,
+				this.simplified,
+			);
+		const work = (overBudget
+			? this.explainSectioned(doc, mode, key, tag, ui)
+			: this.runInference(parts!, tag, key, doc, this.capFor(mode), ui))
 			.finally(() => {
 				this.inflight.delete(key);
 			});
 		this.inflight.set(key, work);
 		return work;
+	}
+
+	// Sectioned analysis for a file that doesn't fit the context budget:
+	// summarize each section in order (bounded rolling context + declaration
+	// carry-over), then a combine pass writes the final answer with honest
+	// scope disclosure. Sequential — one request at a time, cancellable
+	// between sections; failed sections are disclosed, not hidden.
+	private async explainSectioned(
+		doc: DocLike,
+		mode: ExplainMode,
+		key: string,
+		tag: string,
+		ui?: RequestUi,
+	): Promise<ExplanationResult> {
+		const text = doc.getText();
+		const sections = splitSections(text, this.options.maxSourceBytes);
+		if (sections.length <= 1) {
+			// Boundary case: a single oversized line (minified file). Send it
+			// as one request — the model handles its own context window.
+			const parts = buildPrompt(
+				{ fileName: doc.fileName, languageId: doc.languageId, text },
+				mode, this.simplified,
+			);
+			return this.runInference(parts, tag, key, doc, this.capFor(mode), ui);
+		}
+		this.logger?.info(`explain sections: ${tag} sections=${sections.length}`);
+		const summaries: string[] = [];
+		const declarations: string[] = [];
+		const failed: number[] = [];
+		for (let i = 0; i < sections.length; i++) {
+			if (ui?.signal?.aborted) {
+				return { status: 'error', kind: 'cancelled', message: 'Cancelled', hint: hintFor('cancelled', this.options.model, '') };
+			}
+			const s = sections[i];
+			ui?.onToken?.(`*Analyzing section ${i + 1} of ${sections.length} (lines ${s.startLine}–${s.endLine})…*`);
+			const parts = buildSectionPrompt(
+				{ fileName: doc.fileName, languageId: doc.languageId, text: s.text, startLine: s.startLine, endLine: s.endLine },
+				i + 1, sections.length,
+				summaries.slice(-3).join('\n'),
+				declarations.slice(-15),
+			);
+			const r = await this.runInference(parts, `${tag} section=${i + 1}/${sections.length}`, undefined, doc, this.capFor('section'), { signal: ui?.signal });
+			if (r.status === 'ok' && r.source === 'model') {
+				summaries.push(r.text);
+				declarations.push(...declarationsOf(s.text).slice(0, 5));
+			} else {
+				failed.push(i + 1);
+			}
+		}
+		const parts = buildCombinePrompt(
+			doc.fileName, doc.languageId, mode, summaries, declarations, failed, sections.length, this.simplified,
+		);
+		return this.runInference(parts, tag, key, doc, this.capFor(mode), ui);
 	}
 
 	async explainSelection(
@@ -170,7 +233,9 @@ export class ExplanationService {
 		// The fallback analyses just the selection, not the whole file.
 		const selDoc: DocLike = { ...doc, getText: () => sel.text };
 		const payload = sel.text.length + (sel.before?.length ?? 0) + (sel.after?.length ?? 0);
-		const preflight = this.preflight(sel.text, selDoc, payload);
+		// No size rejection: the exact selection is prioritized. Only
+		// unsupported-language and empty-selection states abort early.
+		const preflight = this.preflight(sel.text, selDoc);
 		if (preflight) {
 			return preflight;
 		}
@@ -293,16 +358,12 @@ export class ExplanationService {
 		return this.runInference(parts, `file=${baseName(doc.fileName)} mode=assess lines=${sel.startLine}-${sel.endLine} bytes=${sel.text.length}`, undefined, selDoc, this.capFor('assess'), ui);
 	}
 
-	private preflight(text: string, doc: DocLike, payloadBytes?: number): ExplanationResult | undefined {
+	private preflight(text: string, doc: DocLike): ExplanationResult | undefined {
 		if (!this.isSupportedLang(doc.languageId)) {
 			return { status: 'unsupported' };
 		}
 		if (text.trim().length === 0) {
 			return { status: 'empty' };
-		}
-		const bytes = payloadBytes ?? text.length;
-		if (bytes > this.options.maxSourceBytes) {
-			return { status: 'tooLarge', bytes, limit: this.options.maxSourceBytes };
 		}
 		return undefined;
 	}

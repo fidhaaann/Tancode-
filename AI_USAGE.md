@@ -23,3 +23,6 @@ Use Codex during the hackathon and briefly document its actual contribution here
 
 ## 2026-10-24 — JSON/version intelligence milestone
 - Devin implemented the JSONC parser, tech-profile collector, manifest insight prompt, secret redaction, panel wiring, and tests; the spec came from the user. Human review pending; 128/128 tests pass. Live model output not yet verified.
+
+## 2026-10-24 — Large-file sectioning + README rewrite
+- Devin implemented section-based analysis, removed the file-size rejections, and rewrote the README from the verified manifest/code; spec from the user. 138/138 tests pass. Live model behavior unverified.

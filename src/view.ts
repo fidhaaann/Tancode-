@@ -17,7 +17,6 @@ export type ViewState =
 	| { kind: 'noEditor' }
 	| { kind: 'unsupported'; fileName: string; languageId: string; lines?: string }
 	| { kind: 'empty'; fileName: string; lines?: string }
-	| { kind: 'tooLarge'; fileName: string; bytes: number; limit: number; lines?: string }
 	| { kind: 'loading'; fileName: string; languageName: string; model: string; label: string; lines?: string }
 	| {
 		kind: 'model'; fileName: string; languageName: string; model: string;
@@ -133,13 +132,6 @@ export function renderBody(state: ViewState): string {
 			return `<div class="empty">
 				<h2>Nothing to explain</h2>
 				<p><code>${escapeHtml(state.fileName)}</code>${state.lines ? ` ${escapeHtml(state.lines)}` : ''} is empty.</p>
-			</div>`;
-
-		case 'tooLarge':
-			return `<div class="empty">
-				<h2>Too large to explain</h2>
-				<p><code>${escapeHtml(state.fileName)}</code>${state.lines ? ` ${escapeHtml(state.lines)}` : ''} is ${Math.round(state.bytes / 1024)} KB, over the ${Math.round(state.limit / 1024)} KB limit.</p>
-				<p>Select a smaller range, or raise the <code>tancode.maxSourceBytes</code> setting.</p>
 			</div>`;
 
 		case 'loading':
