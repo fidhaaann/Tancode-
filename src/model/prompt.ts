@@ -416,3 +416,90 @@ export function buildManifestInsightPrompt(fileName: string, profileText: string
 		].join('\n'),
 	};
 }
+
+// --- Large-file sectioned analysis ----------------------------------------
+//
+// Used when a file exceeds the model-context budget: each section is
+// summarized in order with a bounded rolling summary of what came before,
+// then a combine pass writes the final explanation with honest scope
+// disclosure. Section content is untrusted like file content.
+
+export interface SectionContext {
+	fileName: string;
+	languageId: string;
+	/** the section's raw text (untrusted) */
+	text: string;
+	startLine: number;
+	endLine: number;
+}
+
+export function buildSectionPrompt(
+	section: SectionContext,
+	sectionNo: number,
+	totalSections: number,
+	priorSummary: string,
+	declarations: string[],
+): { system: string; prompt: string } {
+	return {
+		system: SYSTEM_PROMPT,
+		prompt: [
+			`You are analyzing "${section.fileName}" (${section.languageId}) which is too large for a single`,
+			`request. This is section ${sectionNo} of ${totalSections} (lines ${section.startLine}-${section.endLine}).`,
+			'',
+			'Summarize what THIS section defines and does in 3-5 sentences: key declarations, their',
+			'purpose, and anything it depends on from earlier parts of the file. Be concrete — later',
+			'sections and the final explanation build on your summary. Do not speculate about content',
+			'outside this section.',
+			'',
+			...(priorSummary
+				? ['<previous_sections>', priorSummary, '</previous_sections>', '']
+				: []),
+			...(declarations.length > 0
+				? [`Declarations seen so far: ${declarations.join(', ')}`, '']
+				: []),
+			'<file_section>',
+			section.text,
+			'</file_section>',
+		].join('\n'),
+	};
+}
+
+export function buildCombinePrompt(
+	fileName: string,
+	languageId: string,
+	mode: ExplainMode,
+	summaries: string[],
+	declarations: string[],
+	failedSections: number[],
+	totalSections: number,
+	simplified: boolean,
+): { system: string; prompt: string } {
+	const parts = [
+		`Write the final explanation of "${fileName}" (${languageId}). The file exceeded one request`,
+		`and was analyzed in ${totalSections} sequential sections; below are the per-section summaries`,
+		'and the declarations found. Synthesize them into ONE coherent file explanation — not a',
+		'section-by-section recap.',
+		'',
+		'Begin with one short sentence stating the file was analyzed in sections',
+		`(e.g. "This file was analyzed in ${totalSections} sections.").`,
+	];
+	if (failedSections.length > 0) {
+		parts.push(
+			`Sections ${failedSections.join(', ')} could not be analyzed — state that explicitly and`,
+			'do not claim coverage of them.',
+		);
+	}
+	parts.push('', teachingFrame(simplified), '');
+	if (declarations.length > 0) {
+		parts.push(`Declarations found across sections: ${declarations.slice(0, 40).join(', ')}`, '');
+	}
+	parts.push('<section_summaries>');
+	summaries.forEach((s, i) => {
+		parts.push(`--- section ${i + 1} ---`, s);
+	});
+	parts.push('</section_summaries>');
+	if (mode === 'summary') {
+		parts.push('', 'Keep the whole answer brief — 2-4 short paragraphs.');
+	}
+	return { system: SYSTEM_PROMPT, prompt: parts.join('\n') };
+}

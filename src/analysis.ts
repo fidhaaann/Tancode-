@@ -48,9 +48,6 @@ const LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
 	jsonc: 'JSON with Comments',
 };
 
-// Guard against pathological files: reading a huge document into the
-// analysis pass would stall the extension host.
-const MAX_ANALYSIS_BYTES = 512 * 1024;
 const MAX_SYMBOLS = 50;
 const MAX_IMPORTS = 20;
 
@@ -206,9 +203,6 @@ export function explain(document: Pick<vscode.TextDocument, 'languageId' | 'file
 	}
 	const text = document.getText();
 	if (text.trim().length === 0) {
-		return undefined;
-	}
-	if (text.length > MAX_ANALYSIS_BYTES) {
 		return undefined;
 	}
 

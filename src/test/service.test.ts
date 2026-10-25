@@ -160,12 +160,12 @@ test('explainSelection sends only the selection and caches by mode+range', async
 	assert.equal(calls.length, 3);
 });
 
-test('explainSelection short-circuits empty and oversized selections', async () => {
-	const { service, calls } = makeService(async () => 'never');
+test('explainSelection short-circuits empty selections but accepts large ones', async () => {
+	const { service, calls } = makeService(async () => 'explained');
 	assert.equal((await service.explainSelection(doc(), { ...sel, text: '   ' }, 'explain')).status, 'empty');
 	const big = await service.explainSelection(doc(), { ...sel, text: 'x'.repeat(2048) }, 'explain');
-	assert.equal(big.status, 'tooLarge');
-	assert.equal(calls.length, 0);
+	assert.equal(big.status, 'ok');
+	assert.equal(calls.length, 1, 'a large selection is sent, not rejected');
 });
 
 test('explainSelection error falls back to rules over the selection', async () => {
@@ -194,19 +194,59 @@ test('assessAnswer sends question and answer, returns model text', async () => {
 	assert.match(calls[0], /<answer>\na new array\n<\/answer>/);
 });
 
-test('unsupported, empty, and oversized docs short-circuit before inference', async () => {
+test('unsupported and empty docs short-circuit before inference', async () => {
 	const { service, calls } = makeService(async () => 'never called');
 	const unsupported = new ExplanationService(
 		(new OllamaClient('http://x', 1)), new ExplanationCache<ExplanationResult>(),
 		() => undefined, () => false, { model: 'm', maxSourceBytes: 1024, fallbackToRules: true });
 	assert.equal((await unsupported.explain(doc({ languageId: 'markdown' }), 'summary')).status, 'unsupported');
 	assert.equal((await service.explain(doc({ getText: () => '   \n ' }), 'summary')).status, 'empty');
-	const tooLarge = await service.explain(doc({ getText: () => 'x'.repeat(2048) }), 'summary');
-	assert.equal(tooLarge.status, 'tooLarge');
-	if (tooLarge.status === 'tooLarge') {
-		assert.equal(tooLarge.limit, 1024);
-	}
 	assert.equal(calls.length, 0);
+});
+
+test('a doc over the context budget is analyzed in sections, not rejected', async () => {
+	const { service, calls } = makeService(async (_m, _s, prompt) =>
+		prompt.includes('<section_summaries>') ? 'final combined answer' : 'section summary');
+	// 6 x ~600-char lines => ~3.6KB, over the 1KB test budget => 3+ sections.
+	const big = Array.from({ length: 6 }, (_, i) => `export function fn${i}() { return '${'x'.repeat(500)}'; }`).join('\n');
+	const res = await service.explain(doc({ getText: () => big }), 'summary');
+	assert.equal(res.status, 'ok');
+	if (res.status === 'ok' && res.source === 'model') {
+		assert.equal(res.text, 'final combined answer');
+	}
+	assert.ok(calls.length >= 4, `expected section calls + combine, got ${calls.length}`);
+	assert.ok(calls[calls.length - 1].includes('<section_summaries>'), 'final call is the combine prompt');
+	assert.ok(calls[0].includes('section 1 of'));
+});
+
+test('sectioned analysis cancels between sections', async () => {
+	const controller = new AbortController();
+	let calls = 0;
+	const { service } = makeService(async () => { calls++; controller.abort(); return 's'; });
+	const big = Array.from({ length: 6 }, (_, i) => `function f${i}() { return '${'x'.repeat(500)}'; }`).join('\n');
+	const res = await service.explain(doc({ getText: () => big }), 'summary', false, { signal: controller.signal });
+	assert.equal(res.status, 'error');
+	assert.ok(calls < 10, 'stopped before running every section + combine');
+});
+
+test('a failed section is disclosed to the combine prompt', async () => {
+	let n = 0;
+	const { service, calls } = makeService(async () => {
+		n++;
+		if (n === 2) { throw new OllamaError('timeout', 'slow'); }
+		return n > 2 ? 'combined' : 'section summary';
+	});
+	const big = Array.from({ length: 6 }, (_, i) => `function g${i}() { return '${'x'.repeat(500)}'; }`).join('\n');
+	const res = await service.explain(doc({ getText: () => big }), 'summary');
+	assert.equal(res.status, 'ok');
+	assert.match(calls[calls.length - 1], /could not be analyzed/);
+});
+
+test('single-line oversized doc (minified) sends one request, not a rejection', async () => {
+	const { service, calls } = makeService(async () => 'explained');
+	const res = await service.explain(doc({ getText: () => 'x'.repeat(3000) }), 'summary');
+	assert.equal(res.status, 'ok');
+	assert.equal(calls.length, 1);
 });
 
 test('per-mode num_predict limits keep routine answers short', async () => {

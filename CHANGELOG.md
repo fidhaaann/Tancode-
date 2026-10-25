@@ -2,6 +2,15 @@
 
 Record each meaningful project change during the event, newest first. Update this file in the same commit as the change. Use a real timestamp with timezone, for example `YYYY-MM-DDTHH:MM:SS+05:30`.
 
+## 2026-10-24 — Remove file-size rejection + README rewrite (UTC)
+
+- Removed the arbitrary 64 KB file-size rejection (`tooLarge` state deleted): `tancode.maxSourceBytes` is now a prompt context budget — larger files go through sectioned analysis instead of being refused. Also removed the 512 KB rules-analysis cutoff and the oversized-selection rejection.
+- New `src/model/sections.ts`: `splitSections` cuts on declaration/line boundaries (never drops content), `declarationsOf` feeds cross-section symbols. `ExplanationService.explainSectioned` runs sequential per-section summaries (bounded rolling context), then a combine pass that discloses the sectioned scope and any failed sections. Cancellable between sections; progress shown via streaming. Fixed an infinite loop when a single line exceeds the budget.
+- Selections: only empty/unsupported states short-circuit; large selections are sent, not rejected.
+- Rewrote README to match the verified implementation: features, Mermaid architecture, prerequisites, install, Ollama config, dev workflow, commands table, settings reference, usage examples, troubleshooting, dev/testing, privacy, honest roadmap.
+- Validation: `npm run compile`, `npm run typecheck`, `npm test` — 138/138 pass on Node v24.
+- Not verified: live sectioned analysis latency/quality against qwen3:8b (no Ollama on this VM).
+
 ## 2026-10-24 — Fix: pinned chat context survives file clicks (UTC)
 
 - Bug: while chatting, clicking/opening another source file silently re-pointed the conversation — `onDidChangeActiveTextEditor` re-explained the newly focused file and `currentDoc()` read `activeTextEditor`, so both the pinned context card and the doc chat answers describe switched files mid-conversation.
